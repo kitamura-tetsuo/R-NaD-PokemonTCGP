@@ -64,8 +64,16 @@ class UnifiedModel(nn.Module):
         self.policy_head = PolicyHead(hidden_dim, action_dim)
         self.value_head = ValueHead(hidden_dim)
 
-    def forward(self, x):
+    def forward(self, x, action_mask=None):
         features = self.torso(x)
         policy_logits = self.policy_head(features)
         value = self.value_head(features)
+        if action_mask is not None:
+            # We assume action_mask is 1 for valid actions and 0 for invalid actions.
+            # We mask invalid actions (where mask is 0 or False).
+            if action_mask.dtype == torch.bool:
+                mask = ~action_mask
+            else:
+                mask = action_mask == 0
+            policy_logits = policy_logits.masked_fill(mask, -1e9)
         return policy_logits, value
