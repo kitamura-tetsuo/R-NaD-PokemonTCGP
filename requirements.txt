@@ -3,5 +3,3 @@ jaxlib
 dm-haiku
 optax
 open_spiel
-deckgym_openspiel
-./deckgym-core
