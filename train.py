@@ -13,6 +13,8 @@ def main():
     parser.add_argument("--learning_rate", type=float, default=3e-4, help="Learning rate")
     parser.add_argument("--hidden_size", type=int, default=256, help="Hidden size for network")
     parser.add_argument("--num_blocks", type=int, default=4, help="Number of residual blocks")
+    parser.add_argument("--checkpoint_dir", type=str, default="checkpoints", help="Directory to save/load checkpoints")
+    parser.add_argument("--resume_checkpoint", type=str, default=None, help="Specific checkpoint file to resume from")
 
     args = parser.parse_args()
 
@@ -27,7 +29,7 @@ def main():
     logging.info(f"Starting training with config: {config}")
 
     try:
-        train_loop(config)
+        train_loop(config, checkpoint_dir=args.checkpoint_dir, resume_checkpoint=args.resume_checkpoint)
     except Exception as e:
         logging.error(f"Training failed: {e}", exc_info=True)
         sys.exit(1)
