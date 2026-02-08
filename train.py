@@ -1,6 +1,7 @@
 import argparse
 import sys
 import logging
+import deckgym_openspiel
 from src.rnad import train_loop, RNaDConfig
 from src.training.experiment import ExperimentManager
 

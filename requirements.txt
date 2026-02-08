@@ -5,3 +5,4 @@ optax
 open_spiel
 mlflow
 orbax-checkpoint
+gymnasium
