@@ -34,6 +34,8 @@ class RNaDConfig(NamedTuple):
     num_blocks: int = 4
     log_interval: int = 100
     save_interval: int = 1000
+    deck_id_1: str = "deckgym-core/example_decks/mewtwoex.txt"
+    deck_id_2: str = "deckgym-core/example_decks/mewtwoex.txt"
 
 def v_trace(
     v_tm1: jnp.ndarray, # (T, B)
@@ -136,7 +138,13 @@ def loss_fn(params, fixed_params, batch, apply_fn, config: RNaDConfig, alpha_rna
 
 class RNaDLearner:
     def __init__(self, game_name: str, config: RNaDConfig):
-        self.game = pyspiel.load_game(game_name)
+        self.game = pyspiel.load_game(
+            game_name,
+            {
+                "deck_id_1": config.deck_id_1,
+                "deck_id_2": config.deck_id_2,
+            }
+        )
         self.config = config
         self.num_actions = self.game.num_distinct_actions()
         self.obs_shape = self.game.observation_tensor_shape()
@@ -216,7 +224,16 @@ class RNaDLearner:
                     if env.is_terminal():
                         active[i] = False
                         continue
-                    current_obs.append(env.observation_tensor())
+                    
+                    if env.is_chance_node():
+                        # Handle chance node
+                        outcomes, probs = zip(*env.chance_outcomes())
+                        a = np.random.choice(outcomes, p=probs)
+                        env.apply_action(a)
+                        continue
+
+                    player = env.current_player()
+                    current_obs.append(env.observation_tensor(player))
                     indices.append(i)
 
             if not current_obs:

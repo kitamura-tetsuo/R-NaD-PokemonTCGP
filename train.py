@@ -18,6 +18,8 @@ def main():
     parser.add_argument("--resume_checkpoint", type=str, default=None, help="Specific checkpoint file to resume from")
     parser.add_argument("--log_interval", type=int, default=100, help="Logging interval")
     parser.add_argument("--save_interval", type=int, default=1000, help="Checkpoint interval")
+    parser.add_argument("--deck_id_1", type=str, default="deckgym-core/example_decks/mewtwoex.txt", help="Path to deck file for player 1")
+    parser.add_argument("--deck_id_2", type=str, default="deckgym-core/example_decks/mewtwoex.txt", help="Path to deck file for player 2")
 
     args = parser.parse_args()
 
@@ -28,7 +30,9 @@ def main():
         hidden_size=args.hidden_size,
         num_blocks=args.num_blocks,
         log_interval=args.log_interval,
-        save_interval=args.save_interval
+        save_interval=args.save_interval,
+        deck_id_1=args.deck_id_1,
+        deck_id_2=args.deck_id_2
     )
 
     # Initialize ExperimentManager
