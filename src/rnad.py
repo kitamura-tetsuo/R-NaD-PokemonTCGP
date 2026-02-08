@@ -32,6 +32,8 @@ class RNaDConfig(NamedTuple):
     clip_pg_rho_threshold: float = 1.0
     hidden_size: int = 256
     num_blocks: int = 4
+    log_interval: int = 100
+    save_interval: int = 1000
 
 def v_trace(
     v_tm1: jnp.ndarray, # (T, B)
@@ -311,7 +313,7 @@ class RNaDLearner:
         logging.info(f"Checkpoint loaded from {path}, resuming from step {step}")
         return step
 
-def train_loop(config: RNaDConfig, checkpoint_dir: str = "checkpoints", resume_checkpoint: Optional[str] = None):
+def train_loop(config: RNaDConfig, experiment_manager: Optional[Any] = None, checkpoint_dir: str = "checkpoints", resume_checkpoint: Optional[str] = None):
     learner = RNaDLearner("deckgym_ptcgp", config)
     learner.init(jax.random.PRNGKey(42))
 
@@ -345,16 +347,26 @@ def train_loop(config: RNaDConfig, checkpoint_dir: str = "checkpoints", resume_c
                 start_step += 1
                 logging.info(f"Auto-resuming from latest checkpoint: {latest_checkpoint}")
 
+    if experiment_manager:
+        experiment_manager.log_params(config)
+
     logging.info(f"Starting training loop from step {start_step}...")
 
     # Save interval
-    save_interval = 1000
+    save_interval = config.save_interval if hasattr(config, 'save_interval') else 1000
 
     for step in range(start_step, config.max_steps):
         metrics = learner.train_step(jax.random.PRNGKey(step), step)
 
         if step % 10 == 0:
             logging.info(f"Step {step}: {metrics}")
+
+        if experiment_manager and step % config.log_interval == 0:
+            experiment_manager.log_metrics(step, metrics)
+
+        if experiment_manager and step % config.save_interval == 0:
+            # experiment_manager might have its own saving logic, keep it
+            experiment_manager.save_model(step, learner.params)
 
         if step % 100 == 0:
             learner.update_fixed_point()
