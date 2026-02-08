@@ -1,4 +1,4 @@
 #!/bin/bash
 set -e
 export PYTHONPATH=$PYTHONPATH:.
-pytest tests/
+uv run pytest tests/
