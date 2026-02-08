@@ -6,6 +6,9 @@ import pyspiel
 import numpy as np
 import logging
 import time
+import pickle
+import os
+import re
 from typing import NamedTuple, Tuple, List, Dict, Any, Optional
 from src.models import DeckGymNet
 from functools import partial
@@ -63,7 +66,7 @@ def v_trace(
 
     # Scan from T-1 down to 0
     xs = (rho_bar_t, c_bar_t, r_t, v_all[:-1], v_all[1:])
-    xs_rev = jax.tree_map(lambda x: x[::-1], xs)
+    xs_rev = jax.tree_util.tree_map(lambda x: x[::-1], xs)
 
     init_acc = jnp.zeros_like(v_tm1[0])
     _, vs_rev = jax.lax.scan(scan_body, init_acc, xs_rev)
@@ -285,15 +288,74 @@ class RNaDLearner:
         }
         return batch
 
-def train_loop(config: RNaDConfig, experiment_manager: Optional[Any] = None):
+    def save_checkpoint(self, path: str, step: int):
+        data = {
+            'params': self.params,
+            'fixed_params': self.fixed_params,
+            'opt_state': self.opt_state,
+            'step': step,
+            'config': self.config
+        }
+        with open(path, 'wb') as f:
+            pickle.dump(data, f)
+        logging.info(f"Checkpoint saved to {path} at step {step}")
+
+    def load_checkpoint(self, path: str) -> int:
+        with open(path, 'rb') as f:
+            data = pickle.load(f)
+        self.params = data['params']
+        self.fixed_params = data['fixed_params']
+        self.opt_state = data['opt_state']
+        step = data['step']
+        # We generally trust the loaded config to match roughly or ignore it,
+        # or we could assert config compatibility.
+        # For now, we assume the user knows what they are doing.
+        logging.info(f"Checkpoint loaded from {path}, resuming from step {step}")
+        return step
+
+def train_loop(config: RNaDConfig, experiment_manager: Optional[Any] = None, checkpoint_dir: str = "checkpoints", resume_checkpoint: Optional[str] = None):
     learner = RNaDLearner("deckgym_ptcgp", config)
     learner.init(jax.random.PRNGKey(42))
+
+    start_step = 0
+
+    # Ensure checkpoint directory exists
+    os.makedirs(checkpoint_dir, exist_ok=True)
+
+    if resume_checkpoint:
+        if os.path.exists(resume_checkpoint):
+            start_step = learner.load_checkpoint(resume_checkpoint)
+            start_step += 1 # Resume from next step
+        else:
+            logging.error(f"Checkpoint {resume_checkpoint} not found!")
+            return
+    else:
+        # Check for latest checkpoint in directory
+        checkpoints = [f for f in os.listdir(checkpoint_dir) if f.startswith("checkpoint_") and f.endswith(".pkl")]
+        if checkpoints:
+            # Extract step numbers
+            steps = []
+            for cp in checkpoints:
+                match = re.search(r"checkpoint_(\d+).pkl", cp)
+                if match:
+                    steps.append(int(match.group(1)))
+
+            if steps:
+                latest_step = max(steps)
+                latest_checkpoint = os.path.join(checkpoint_dir, f"checkpoint_{latest_step}.pkl")
+                start_step = learner.load_checkpoint(latest_checkpoint)
+                start_step += 1
+                logging.info(f"Auto-resuming from latest checkpoint: {latest_checkpoint}")
 
     if experiment_manager:
         experiment_manager.log_params(config)
 
-    logging.info("Starting training loop...")
-    for step in range(config.max_steps):
+    logging.info(f"Starting training loop from step {start_step}...")
+
+    # Save interval
+    save_interval = config.save_interval if hasattr(config, 'save_interval') else 1000
+
+    for step in range(start_step, config.max_steps):
         metrics = learner.train_step(jax.random.PRNGKey(step), step)
 
         if step % 10 == 0:
@@ -308,6 +370,16 @@ def train_loop(config: RNaDConfig, experiment_manager: Optional[Any] = None):
         if step % 100 == 0:
             learner.update_fixed_point()
             logging.info("Updated fixed point.")
+
+        if step % save_interval == 0:
+             ckpt_path = os.path.join(checkpoint_dir, f"checkpoint_{step}.pkl")
+             learner.save_checkpoint(ckpt_path, step)
+
+    # Save final checkpoint
+    final_step = config.max_steps - 1
+    ckpt_path = os.path.join(checkpoint_dir, f"checkpoint_{final_step}.pkl")
+    learner.save_checkpoint(ckpt_path, final_step)
+    logging.info("Training complete.")
 
 if __name__ == "__main__":
     train_loop(RNaDConfig())

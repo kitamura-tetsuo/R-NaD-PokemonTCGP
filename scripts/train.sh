@@ -1,4 +1,4 @@
 #!/bin/bash
 set -e
 export PYTHONPATH=$PYTHONPATH:.:deckgym-core/python
-uv run pytest tests/
+uv run python train.py "$@"
