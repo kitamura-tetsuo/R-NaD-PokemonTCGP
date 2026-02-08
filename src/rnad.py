@@ -365,7 +365,6 @@ def train_loop(config: RNaDConfig, experiment_manager: Optional[Any] = None, che
             experiment_manager.log_metrics(step, metrics)
 
         if experiment_manager and step % config.save_interval == 0:
-            # experiment_manager might have its own saving logic, keep it
             experiment_manager.save_model(step, learner.params)
 
         if step % 100 == 0:

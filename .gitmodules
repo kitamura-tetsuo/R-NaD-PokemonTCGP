@@ -1,0 +1,3 @@
+[submodule "deckgym-core"]
+	path = deckgym-core
+	url = https://github.com/kitamura-tetsuo/deckgym-core
