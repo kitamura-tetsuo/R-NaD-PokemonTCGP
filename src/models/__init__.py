@@ -1,1 +1,1 @@
-from .transformer import UnifiedModel, Torso, PolicyHead, ValueHead
+from .haiku_model import DeckGymNet, ResidualBlock

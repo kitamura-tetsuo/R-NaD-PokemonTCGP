@@ -1,4 +1,5 @@
-torch
-numpy
-gymnasium
-./deckgym-core
+jax
+jaxlib
+dm-haiku
+optax
+open_spiel
