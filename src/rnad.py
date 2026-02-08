@@ -29,6 +29,8 @@ class RNaDConfig(NamedTuple):
     clip_pg_rho_threshold: float = 1.0
     hidden_size: int = 256
     num_blocks: int = 4
+    log_interval: int = 100
+    save_interval: int = 1000
 
 def v_trace(
     v_tm1: jnp.ndarray, # (T, B)
@@ -283,9 +285,12 @@ class RNaDLearner:
         }
         return batch
 
-def train_loop(config: RNaDConfig):
+def train_loop(config: RNaDConfig, experiment_manager: Optional[Any] = None):
     learner = RNaDLearner("deckgym_ptcgp", config)
     learner.init(jax.random.PRNGKey(42))
+
+    if experiment_manager:
+        experiment_manager.log_params(config)
 
     logging.info("Starting training loop...")
     for step in range(config.max_steps):
@@ -293,6 +298,12 @@ def train_loop(config: RNaDConfig):
 
         if step % 10 == 0:
             logging.info(f"Step {step}: {metrics}")
+
+        if experiment_manager and step % config.log_interval == 0:
+            experiment_manager.log_metrics(step, metrics)
+
+        if experiment_manager and step % config.save_interval == 0:
+            experiment_manager.save_model(step, learner.params)
 
         if step % 100 == 0:
             learner.update_fixed_point()

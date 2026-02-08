@@ -3,3 +3,5 @@ jaxlib
 dm-haiku
 optax
 open_spiel
+mlflow
+orbax-checkpoint
