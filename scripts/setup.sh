@@ -1,13 +1,15 @@
 #!/bin/bash
 set -e
 
+git submodule update --init --recursive
+
 # Cleanup on exit
 trap "rm -f requirements_temp.txt" EXIT
 
 # Check if uv is installed
 if ! command -v uv &> /dev/null; then
     echo "uv not found. Installing..."
-    pip install uv
+    curl -LsSf https://astral.sh/uv/install.sh | sh
 fi
 
 # Create virtual environment if not exists
