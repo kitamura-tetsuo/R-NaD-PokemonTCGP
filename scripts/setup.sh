@@ -31,7 +31,7 @@ uv pip install -r requirements_temp.txt
 # Try to install deckgym-core if it exists and is not empty
 if [ -d "deckgym-core" ] && [ "$(ls -A deckgym-core)" ]; then
     echo "Installing deckgym-core..."
-    uv pip install ./deckgym-core
+    (cd deckgym-core && maturin develop)
 else
     echo "deckgym-core directory is empty or missing. Skipping installation."
 fi
