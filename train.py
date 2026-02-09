@@ -30,6 +30,8 @@ def main():
     parser.add_argument("--league_rates", type=float, nargs="+", default=None, help="Relative participation rates for the league decks")
     parser.add_argument("--fixed_decks", type=str, nargs="+", default=None, help="List of decks that always participate in matches")
 
+    parser.add_argument("--past_self_play", action="store_true", help="Enable past self-play (training against past checkpoints)")
+
     args = parser.parse_args()
 
     league_config = None
@@ -59,7 +61,8 @@ def main():
         league_config=league_config,
         win_reward=args.win_reward,
         point_reward=args.point_reward,
-        damage_reward=args.damage_reward
+        damage_reward=args.damage_reward,
+        past_self_play=args.past_self_play
     )
 
     # Initialize ExperimentManager

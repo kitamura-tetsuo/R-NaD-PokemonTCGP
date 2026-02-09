@@ -96,6 +96,7 @@ class RNaDConfig(NamedTuple):
     win_reward: float = 1.0
     point_reward: float = 0.0
     damage_reward: float = 0.0
+    past_self_play: bool = False
 
 def v_trace(
     v_tm1: jnp.ndarray, # (T, B)
@@ -310,46 +311,111 @@ class RNaDLearner:
         return metrics
 
     def generate_trajectories(self, key):
+        # Sample decks
         if self.config.league_config:
             decks_1, decks_2 = self.config.league_config.sample_decks(self.config.batch_size)
-            initial_obs = self.batched_sim.reset(
+            reset_result = self.batched_sim.reset(
                 seed=int(jax.random.randint(key, (), 0, 1000000)),
                 deck_ids_1=decks_1,
                 deck_ids_2=decks_2
             )
         else:
-            initial_obs = self.batched_sim.reset(seed=int(jax.random.randint(key, (), 0, 1000000)))
+            reset_result = self.batched_sim.reset(seed=int(jax.random.randint(key, (), 0, 1000000)))
         
+        # New signature: reset(..) -> (obs, current_players)
+        # Note: If deckgym wasn't updated correctly, this unpack will fail.
+        # But we updated it.
+        initial_obs, initial_current_players = reset_result
+
+        # Determine if we use past self-play
+        use_past_self_play = False
+        past_params = None
+        
+        if self.config.past_self_play:
+            # Check for checkpoints
+            checkpoint_dir = getattr(self.config, 'checkpoint_dir', 'checkpoints')
+            if os.path.exists(checkpoint_dir):
+                checkpoints = [f for f in os.listdir(checkpoint_dir) if f.startswith("checkpoint_") and f.endswith(".pkl")]
+                if checkpoints and len(checkpoints) > 0:
+                     use_past_self_play = True
+                     # Pick a random checkpoint
+                     chosen_cp = np.random.choice(checkpoints)
+                     try:
+                         with open(os.path.join(checkpoint_dir, chosen_cp), 'rb') as f:
+                             data = pickle.load(f)
+                             past_params = data['params']
+                     except Exception as e:
+                         logging.warning(f"Failed to load past checkpoint {chosen_cp}: {e}")
+                         use_past_self_play = False
+            
+            if not use_past_self_play and self.config.past_self_play:
+                 logging.warning("Past self-play requested but no checkpoints found. Falling back to self-play.")
+
+        # Assign agent identity (0 or 1) per environment
+        # agent_player_ids[i] = 0 means Agent is Player 0, Past (or Self) is Player 1
+        agent_player_ids = np.zeros(self.config.batch_size, dtype=int)
+        if use_past_self_play:
+             # Randomly assign Agent to P1 (0) or P2 (1)
+             agent_player_ids = np.random.randint(0, 2, size=self.config.batch_size)
+
         # Storage per environment
         env_trajs = [{'obs': [], 'act': [], 'rew': [], 'log_prob': []} for _ in range(self.config.batch_size)]
         
         active_mask = np.ones(self.config.batch_size, dtype=bool)
         current_obs = np.array(initial_obs)
+        current_players = np.array(initial_current_players)
 
         while active_mask.any():
-            # 1. Get Logits for all environments (including inactive ones, masked in Rust)
+            # 1. Inference
             logits = self._inference_fn(self.params, current_obs)
             logits_np = np.array(logits)
 
+            if use_past_self_play:
+                past_logits = self._inference_fn(past_params, current_obs)
+                past_logits_np = np.array(past_logits)
+                
+                # Combine logits based on whose turn it is
+                # If current_players[i] == agent_player_ids[i], it is Agent's turn -> use logits_np
+                # Else it is Past's turn -> use past_logits_np
+                
+                mask_agent = (current_players == agent_player_ids)
+                # Ensure shape compatibility for broadcasting if necessary
+                # logits_np is (B, A), mask_agent is (B,)
+                final_logits = np.where(mask_agent[:, None], logits_np, past_logits_np)
+            else:
+                final_logits = logits_np
+
             # 2. Sample and Step in Rust (Parallelized!)
-            (next_obs, rewards, dones, _, valid_mask, actions, log_probs) = \
-                self.batched_sim.sample_and_step(logits_np)
+            # Note: sample_and_step now returns current_players as the last element
+            (next_obs, rewards, dones, _, valid_mask, actions, log_probs, next_current_players) = \
+                self.batched_sim.sample_and_step(final_logits)
             
             # 3. Store transitions
             for i in range(self.config.batch_size):
                 if active_mask[i] and valid_mask[i]:
-                    env_trajs[i]['obs'].append(current_obs[i])
-                    env_trajs[i]['act'].append(actions[i])
-                    env_trajs[i]['rew'].append(rewards[i])
-                    env_trajs[i]['log_prob'].append(log_probs[i])
+                    # Determine if we should store this transition
+                    # We store if it was the Agent's turn.
+                    # logic: current_players[i] was the player who acted to produce (next_obs, reward)
+                    # So if current_players[i] == agent_player_ids[i], we store.
+                    
+                    should_store = True
+                    if use_past_self_play:
+                        if current_players[i] != agent_player_ids[i]:
+                            should_store = False
+                    
+                    if should_store:
+                        env_trajs[i]['obs'].append(current_obs[i])
+                        env_trajs[i]['act'].append(actions[i])
+                        env_trajs[i]['rew'].append(rewards[i])
+                        env_trajs[i]['log_prob'].append(log_probs[i])
                     
                     if dones[i]:
                         active_mask[i] = False
                 elif active_mask[i] and not valid_mask[i]:
-                    # This should not happen if logic in Rust is correct
                     active_mask[i] = False
 
             current_obs = np.array(next_obs)
+            current_players = np.array(next_current_players)
 
         # Pad trajectories to max length
         max_len = max(len(t['obs']) for t in env_trajs)
