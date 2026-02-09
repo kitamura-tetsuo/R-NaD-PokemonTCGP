@@ -111,16 +111,13 @@ class RNaDConfig(NamedTuple):
     win_reward: float = 1.0
     point_reward: float = 0.0
     damage_reward: float = 0.0
-<<<<<<< add-jax-profiler-15018126619909108173
     enable_profiler: bool = False
     profiler_dir: str = "runs/profile"
     profile_start_step: int = 10
     profile_num_steps: int = 10
-=======
     past_self_play: bool = False
     test_interval: int = 10
     test_games: int = 8
->>>>>>> main
 
 def v_trace(
     v_tm1: jnp.ndarray, # (T, B)
@@ -217,9 +214,23 @@ def loss_fn(params, fixed_params, batch, apply_fn, config: RNaDConfig, alpha_rna
     # Policy Loss
     policy_loss = -jnp.mean(log_pi_a * jax.lax.stop_gradient(pg_adv))
 
+    # Metrics
+    probs = jax.nn.softmax(logits)
+    entropy = -jnp.sum(probs * log_probs, axis=-1)
+    mean_entropy = jnp.mean(entropy)
+
+    kl = jnp.sum(probs * (log_probs - fixed_log_probs), axis=-1)
+    mean_kl = jnp.mean(kl)
+
+    y_true = jax.lax.stop_gradient(vs)
+    y_pred = values
+    var_y = jnp.var(y_true)
+    var_resid = jnp.var(y_true - y_pred)
+    explained_variance = 1 - var_resid / (var_y + 1e-8)
+
     total_loss = policy_loss + value_loss
 
-    return total_loss, (policy_loss, value_loss)
+    return total_loss, (policy_loss, value_loss, mean_entropy, mean_kl, explained_variance)
 
 class RNaDLearner:
     def __init__(self, game_name: str, config: RNaDConfig):
@@ -305,11 +316,18 @@ class RNaDLearner:
         def loss_wrapper(p):
             return loss_fn(p, fixed_params, batch, apply_fn, config, alpha_rnad)
 
-        (total_loss, (p_loss, v_loss)), grads = jax.value_and_grad(loss_wrapper, has_aux=True)(params)
+        (total_loss, (p_loss, v_loss, ent, kl, ev)), grads = jax.value_and_grad(loss_wrapper, has_aux=True)(params)
         updates, new_opt_state = optimizer.update(grads, opt_state, params)
         new_params = optax.apply_updates(params, updates)
 
-        return new_params, new_opt_state, {'total': total_loss, 'policy': p_loss, 'value': v_loss}
+        return new_params, new_opt_state, {
+            'total_loss': total_loss,
+            'policy_loss': p_loss,
+            'value_loss': v_loss,
+            'policy_entropy': ent,
+            'approx_kl': kl,
+            'explained_variance': ev
+        }
 
     def update(self, batch, step: int):
         # Anneal alpha_rnad
@@ -320,6 +338,10 @@ class RNaDLearner:
             self.params, self.fixed_params, self.opt_state, batch, alpha_rnad=alpha
         )
         metrics['alpha'] = alpha
+
+        if 'stats' in batch:
+            metrics.update(batch['stats'])
+
         return metrics
 
     def update_fixed_point(self):
@@ -391,6 +413,11 @@ class RNaDLearner:
         current_obs = np.array(initial_obs)
         current_players = np.array(initial_current_players)
 
+        # Track episode outcomes
+        # 0: Tie, 1: P1 Win, 2: P2 Win
+        episode_outcomes = np.zeros(self.config.batch_size, dtype=int)
+        outcome_recorded = np.zeros(self.config.batch_size, dtype=bool)
+
         while active_mask.any():
             # 1. Inference
             logits = self._inference_fn(self.params, current_obs)
@@ -437,11 +464,45 @@ class RNaDLearner:
                     
                     if dones[i]:
                         active_mask[i] = False
+                        if not outcome_recorded[i]:
+                            # Determine outcome based on reward
+                            # rewards[i] is for the actor (current_players[i])
+                            actor = current_players[i]
+                            r = rewards[i]
+
+                            # Assumes point_reward and damage_reward are 0 or small enough
+                            if abs(r) > 1e-3:
+                                # Decisive
+                                if r > 0:
+                                    # Actor won
+                                    episode_outcomes[i] = 1 if actor == 0 else 2
+                                else:
+                                    # Actor lost -> Opponent won
+                                    episode_outcomes[i] = 2 if actor == 0 else 1
+                            else:
+                                episode_outcomes[i] = 0 # Tie
+
+                            outcome_recorded[i] = True
+
                 elif active_mask[i] and not valid_mask[i]:
                     active_mask[i] = False
 
             current_obs = np.array(next_obs)
             current_players = np.array(next_current_players)
+
+        # Calculate stats
+        episode_lengths = [len(t['obs']) for t in env_trajs]
+        mean_episode_length = np.mean(episode_lengths) if episode_lengths else 0.0
+        max_episode_length = np.max(episode_lengths) if episode_lengths else 0.0
+
+        p1_wins = np.sum(episode_outcomes == 1)
+        p2_wins = np.sum(episode_outcomes == 2)
+        ties = np.sum(episode_outcomes == 0)
+        total_games = self.config.batch_size
+
+        p1_win_rate = p1_wins / total_games
+        decisive_rate = (p1_wins + p2_wins) / total_games
+        tie_rate = ties / total_games
 
         # Pad trajectories to max length
         max_len = max(len(t['obs']) for t in env_trajs)
@@ -466,7 +527,14 @@ class RNaDLearner:
             'obs': jnp.array(pad('obs', self.obs_shape)),
             'act': jnp.array(pad('act', (), dtype=np.int32)),
             'rew': jnp.array(pad('rew', ())),
-            'log_prob': jnp.array(pad('log_prob', ()))
+            'log_prob': jnp.array(pad('log_prob', ())),
+            'stats': {
+                'mean_episode_length': mean_episode_length,
+                'max_episode_length': max_episode_length,
+                'p1_win_rate': p1_win_rate,
+                'decisive_rate': decisive_rate,
+                'tie_rate': tie_rate
+            }
         }
         return batch
 
@@ -743,11 +811,21 @@ def train_loop(config: RNaDConfig, experiment_manager: Optional[Any] = None, che
                 logging.info(f"Stopping JAX profiler trace at step {step}.")
                 jax.profiler.stop_trace()
 
+        start_time = time.time()
+
         # 1. Get batch from background generator
         batch = generator.get_batch()
 
         # 2. Update
         metrics = learner.update(batch, step)
+
+        end_time = time.time()
+
+        # Calculate SPS
+        total_steps = metrics.get('mean_episode_length', 0) * config.batch_size
+        step_time = end_time - start_time
+        sps = total_steps / (step_time + 1e-6)
+        metrics['sps'] = sps
 
         if step % 10 == 0:
             logging.info(f"Step {step}: {metrics}")
