@@ -2,7 +2,7 @@ import argparse
 import sys
 import logging
 import deckgym_openspiel
-from src.rnad import train_loop, RNaDConfig
+from src.rnad import train_loop, RNaDConfig, LeagueConfig
 from src.training.experiment import ExperimentManager
 
 # Configure logging
@@ -10,7 +10,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 
 def main():
     parser = argparse.ArgumentParser(description="Train R-NaD agent on deckgym_ptcgp")
-    parser.add_argument("--batch_size", type=int, default=128, help="Batch size")
+    parser.add_argument("--batch_size", type=int, default=8, help="Batch size")
     parser.add_argument("--max_steps", type=int, default=1000, help="Maximum training steps")
     parser.add_argument("--learning_rate", type=float, default=3e-4, help="Learning rate")
     parser.add_argument("--hidden_size", type=int, default=256, help="Hidden size for network")
@@ -24,8 +24,27 @@ def main():
     parser.add_argument("--win_reward", type=float, default=1.0, help="Reward for winning")
     parser.add_argument("--point_reward", type=float, default=0.0, help="Reward per point gained")
     parser.add_argument("--damage_reward", type=float, default=0.0, help="Reward per damage dealt")
+    
+    # League expansion arguments
+    parser.add_argument("--league_decks", type=str, nargs="+", default=None, help="List of deck files for the league")
+    parser.add_argument("--league_rates", type=float, nargs="+", default=None, help="Relative participation rates for the league decks")
+    parser.add_argument("--fixed_decks", type=str, nargs="+", default=None, help="List of decks that always participate in matches")
 
     args = parser.parse_args()
+
+    league_config = None
+    if args.league_decks:
+        rates = args.league_rates
+        if rates is None:
+            rates = [1.0] * len(args.league_decks)
+        elif len(rates) != len(args.league_decks):
+            raise ValueError("league_rates must have moving length as league_decks")
+        
+        league_config = LeagueConfig(
+            decks=args.league_decks,
+            rates=rates,
+            fixed_decks=args.fixed_decks or []
+        )
 
     config = RNaDConfig(
         batch_size=args.batch_size,
@@ -37,6 +56,7 @@ def main():
         save_interval=args.save_interval,
         deck_id_1=args.deck_id_1,
         deck_id_2=args.deck_id_2,
+        league_config=league_config,
         win_reward=args.win_reward,
         point_reward=args.point_reward,
         damage_reward=args.damage_reward

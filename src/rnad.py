@@ -37,6 +37,46 @@ try:
 except ImportError:
     pass
 
+class LeagueConfig(NamedTuple):
+    decks: List[str] = ["deckgym-core/example_decks/mewtwoex.txt"]
+    rates: List[float] = [1.0]
+    fixed_decks: List[str] = [] # Decks that always participate in matches
+
+    def sample_decks(self, batch_size: int) -> Tuple[List[str], List[str]]:
+        """Samples deck pairs for a batch."""
+        p = np.array(self.rates) / sum(self.rates)
+        
+        # If no fixed decks, sample both players from league
+        if not self.fixed_decks:
+            decks_1 = np.random.choice(self.decks, size=batch_size, p=p).tolist()
+            decks_2 = np.random.choice(self.decks, size=batch_size, p=p).tolist()
+            return decks_1, decks_2
+        
+        # If we have fixed decks, we ensure one player always uses a fixed deck.
+        # For simplicity, let's say we alternate or sample which player gets the fixed deck,
+        # or just fix player 2 to be one of the fixed decks.
+        # The user said "常に試合に参加する固定デッキの指定も可能にして下さい。固定デッキは指定しない場合もあります。"
+        # "Fixed decks" means these decks are always present in the match.
+        # If multiple fixed decks are specified, we sample from them.
+        
+        # Sample opponent decks from league
+        league_decks = np.random.choice(self.decks, size=batch_size, p=p).tolist()
+        # Sample fixed decks
+        fixed_sampled = np.random.choice(self.fixed_decks, size=batch_size).tolist()
+        
+        # Randomly assign fixed deck to player 1 or 2
+        final_1 = []
+        final_2 = []
+        for i in range(batch_size):
+            if np.random.rand() < 0.5:
+                final_1.append(fixed_sampled[i])
+                final_2.append(league_decks[i])
+            else:
+                final_1.append(league_decks[i])
+                final_2.append(fixed_sampled[i])
+        
+        return final_1, final_2
+
 class RNaDConfig(NamedTuple):
     batch_size: int = 128
     learning_rate: float = 3e-4
@@ -52,6 +92,7 @@ class RNaDConfig(NamedTuple):
     save_interval: int = 1000
     deck_id_1: str = "deckgym-core/example_decks/mewtwoex.txt"
     deck_id_2: str = "deckgym-core/example_decks/mewtwoex.txt"
+    league_config: Optional[LeagueConfig] = None
     win_reward: float = 1.0
     point_reward: float = 0.0
     damage_reward: float = 0.0
@@ -269,7 +310,15 @@ class RNaDLearner:
         return metrics
 
     def generate_trajectories(self, key):
-        initial_obs = self.batched_sim.reset(seed=int(jax.random.randint(key, (), 0, 1000000)))
+        if self.config.league_config:
+            decks_1, decks_2 = self.config.league_config.sample_decks(self.config.batch_size)
+            initial_obs = self.batched_sim.reset(
+                seed=int(jax.random.randint(key, (), 0, 1000000)),
+                deck_ids_1=decks_1,
+                deck_ids_2=decks_2
+            )
+        else:
+            initial_obs = self.batched_sim.reset(seed=int(jax.random.randint(key, (), 0, 1000000)))
         
         # Storage per environment
         env_trajs = [{'obs': [], 'act': [], 'rew': [], 'log_prob': []} for _ in range(self.config.batch_size)]
