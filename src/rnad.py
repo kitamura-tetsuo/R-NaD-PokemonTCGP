@@ -22,6 +22,21 @@ try:
 except ImportError:
     logging.warning("deckgym_openspiel not found. Assuming environment is available via pyspiel.")
 
+# Fix deckgym import if necessary
+try:
+    import deckgym
+    if not hasattr(deckgym, 'PyBatchedSimulator'):
+        if hasattr(deckgym, 'deckgym') and hasattr(deckgym.deckgym, 'PyBatchedSimulator'):
+             deckgym.PyBatchedSimulator = deckgym.deckgym.PyBatchedSimulator
+        else:
+             try:
+                 from deckgym.deckgym import PyBatchedSimulator
+                 deckgym.PyBatchedSimulator = PyBatchedSimulator
+             except ImportError:
+                 pass
+except ImportError:
+    pass
+
 class RNaDConfig(NamedTuple):
     batch_size: int = 128
     learning_rate: float = 3e-4
