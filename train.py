@@ -28,6 +28,7 @@ def main():
     parser.add_argument("--profiler_dir", type=str, default="runs/profile", help="Directory to save profiler trace")
     parser.add_argument("--profile_start_step", type=int, default=10, help="Step to start profiling")
     parser.add_argument("--profile_num_steps", type=int, default=10, help="Number of steps to profile")
+    
     # League expansion arguments
     parser.add_argument("--league_decks", type=str, nargs="+", default=None, help="List of deck files for the league")
     parser.add_argument("--league_rates", type=float, nargs="+", default=None, help="Relative participation rates for the league decks")
