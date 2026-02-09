@@ -71,7 +71,7 @@ def main():
         enable_profiler=args.enable_profiler,
         profiler_dir=args.profiler_dir,
         profile_start_step=args.profile_start_step,
-        profile_num_steps=args.profile_num_steps
+        profile_num_steps=args.profile_num_steps,
         past_self_play=args.past_self_play,
         test_interval=args.test_interval,
         test_games=args.test_games
