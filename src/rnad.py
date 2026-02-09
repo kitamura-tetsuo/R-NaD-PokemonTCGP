@@ -245,17 +245,34 @@ class RNaDLearner:
             logits = np.array(logits)
 
             # Mask illegal actions
+            start_indices = len(indices)
+            valid_indices_mask = []
+            
             for idx, i in enumerate(indices):
                 legal = envs[i].legal_actions()
-                mask = np.ones(logits.shape[-1], dtype=bool)
-                mask[legal] = False
-                logits[idx][mask] = -1e9
+                if not legal:
+                    logging.warning(f"Env {i} stuck: No legal actions (not terminal). Marking terminal.")
+                    active[i] = False
+                    valid_indices_mask.append(False)
+                else:
+                    valid_indices_mask.append(True)
+                    mask = np.ones(logits.shape[-1], dtype=bool)
+                    mask[legal] = False
+                    logits[idx][mask] = -1e9
 
             probs = jax.nn.softmax(logits)
             probs = np.array(probs)
 
             actions = []
             for idx, i in enumerate(indices):
+                if not valid_indices_mask[idx]:
+                    # Produce dummy action to keep array sizes consistent if needed, 
+                    # but we won't use it.
+                    # Actually, the loops below iterate `indices` again.
+                    # We should just skip the logic for this index.
+                    actions.append(0) # Dummy
+                    continue
+
                 p = probs[idx]
                 p = p / p.sum()
                 a = np.random.choice(len(p), p=p)
