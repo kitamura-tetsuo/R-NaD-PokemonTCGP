@@ -15,6 +15,7 @@ PORT=5000
 # 1. バックグラウンドで MLflow UI を起動
 # --host 0.0.0.0 を指定することで外部からの接続を許可します
 DRIVE_MLRUNS="/content/drive/MyDrive/R-NaD-PokemonTCGP_experiments/mlruns"
+
 if [ -d "$DRIVE_MLRUNS" ]; then
     echo "Serving MLflow from Google Drive: $DRIVE_MLRUNS"
     nohup mlflow ui --backend-store-uri "$DRIVE_MLRUNS" --host 0.0.0.0 --port $PORT --allowed-hosts * > mlflow.log 2>&1 &
