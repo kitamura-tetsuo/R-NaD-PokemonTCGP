@@ -50,9 +50,16 @@ def extract_state_info(rust_state):
         "turn": rust_state.turn_count,
         "current_player": rust_state.current_player,
         "points": rust_state.points,
-        "winner": rust_state.winner if rust_state.is_game_over else None,
+        "winner": None,
         "players": []
     }
+
+    if rust_state.is_game_over():
+        outcome = rust_state.winner
+        info["winner"] = {
+            "winner": outcome.winner,
+            "is_tie": outcome.is_tie
+        }
 
     for p in [0, 1]:
         p_info = {

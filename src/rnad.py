@@ -37,6 +37,9 @@ class RNaDConfig(NamedTuple):
     save_interval: int = 1000
     deck_id_1: str = "deckgym-core/example_decks/mewtwoex.txt"
     deck_id_2: str = "deckgym-core/example_decks/mewtwoex.txt"
+    win_reward: float = 1.0
+    point_reward: float = 0.0
+    damage_reward: float = 0.0
 
 def v_trace(
     v_tm1: jnp.ndarray, # (T, B)
@@ -171,7 +174,10 @@ class RNaDLearner:
         self.batched_sim = deckgym.PyBatchedSimulator(
             config.deck_id_1,
             config.deck_id_2,
-            config.batch_size
+            config.batch_size,
+            config.win_reward,
+            config.point_reward,
+            config.damage_reward
         )
 
     def init(self, key):

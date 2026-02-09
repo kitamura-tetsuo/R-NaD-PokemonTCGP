@@ -21,6 +21,9 @@ def main():
     parser.add_argument("--save_interval", type=int, default=1000, help="Checkpoint interval")
     parser.add_argument("--deck_id_1", type=str, default="deckgym-core/example_decks/mewtwoex.txt", help="Path to deck file for player 1")
     parser.add_argument("--deck_id_2", type=str, default="deckgym-core/example_decks/mewtwoex.txt", help="Path to deck file for player 2")
+    parser.add_argument("--win_reward", type=float, default=1.0, help="Reward for winning")
+    parser.add_argument("--point_reward", type=float, default=0.0, help="Reward per point gained")
+    parser.add_argument("--damage_reward", type=float, default=0.0, help="Reward per damage dealt")
 
     args = parser.parse_args()
 
@@ -33,7 +36,10 @@ def main():
         log_interval=args.log_interval,
         save_interval=args.save_interval,
         deck_id_1=args.deck_id_1,
-        deck_id_2=args.deck_id_2
+        deck_id_2=args.deck_id_2,
+        win_reward=args.win_reward,
+        point_reward=args.point_reward,
+        damage_reward=args.damage_reward
     )
 
     # Initialize ExperimentManager
