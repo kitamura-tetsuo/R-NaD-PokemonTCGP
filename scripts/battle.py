@@ -150,7 +150,7 @@ def generate_html(history, output_path):
         .zone {{ display: flex; gap: 10px; margin-bottom: 10px; align-items: flex-start; min-height: 150px; }}
         .zone-title {{ width: 60px; font-size: 14px; color: #666; }}
 
-        .card-container {{ position: relative; width: 100px; }}
+        .card-container {{ position: relative; width: 50px; }}
         .card-img {{ width: 100%; border-radius: 5px; box-shadow: 2px 2px 5px rgba(0,0,0,0.2); }}
         .card-stats {{ position: absolute; bottom: 0; left: 0; right: 0; background: rgba(0,0,0,0.7); color: white; font-size: 10px; padding: 2px; text-align: center; }}
         .status-icon {{ position: absolute; top: 0; right: 0; background: red; color: white; border-radius: 50%; width: 15px; height: 15px; font-size: 10px; display: flex; align-items: center; justify-content: center; }}
@@ -180,7 +180,7 @@ def generate_html(history, output_path):
         let currentStep = 0;
 
         function renderCard(card, type="hand") {{
-            if (!card) return '<div class="card-container" style="border: 1px dashed #ccc; height: 140px;"></div>';
+            if (!card) return '<div class="card-container" style="border: 1px dashed #ccc; height: 70px;"></div>';
 
             let statsHtml = '';
             if (type === 'active' || type === 'bench') {{
@@ -194,7 +194,7 @@ def generate_html(history, output_path):
 
             return `
                 <div class="card-container">
-                    <img src="${{card.url}}" alt="${{card.name}}" class="card-img" onerror="this.src='https://via.placeholder.com/100x140?text=${{encodeURIComponent(card.name)}}'">
+                    <img src="${{card.url}}" alt="${{card.name}}" class="card-img" onerror="this.src='https://via.placeholder.com/50x70?text=${{encodeURIComponent(card.name)}}'">
                     ${{statsHtml}}
                     ${{statusHtml}}
                 </div>
@@ -245,8 +245,15 @@ def generate_html(history, output_path):
 
             document.getElementById('board').innerHTML = p2Html + p1Html; // P2 on top? Or strictly P1, P2. Let's do P2 then P1 so P1 is at bottom.
 
-            // Update Log (optional, simple step info)
-            document.getElementById('log-display').innerText = `Action: ${{state.action_name || "Start"}}`;
+            // Update Log
+            let logText = `Action: ${{state.action_name || "Start"}}`;
+            if (state.top_candidates && state.top_candidates.length > 0) {{
+                logText += '\\n\\nAlternative candidates:';
+                state.top_candidates.forEach(cand => {{
+                    logText += `\\n- ${{cand.name}}: ${{ (cand.prob * 100).toFixed(1) }}%`;
+                }});
+            }}
+            document.getElementById('log-display').innerText = logText;
         }}
 
         function nextTurn() {{
@@ -262,6 +269,11 @@ def generate_html(history, output_path):
                 render();
             }}
         }}
+
+        document.addEventListener('keydown', (e) => {{
+            if (e.key === "ArrowLeft") prevTurn();
+            if (e.key === "ArrowRight") nextTurn();
+        }});
 
         // Initial render
         render();
@@ -316,6 +328,7 @@ def main():
         step_count += 1
 
         current_player = state.current_player()
+        top_candidates = []
 
         if state.is_chance_node():
             outcomes = state.chance_outcomes()
@@ -350,11 +363,24 @@ def main():
             action = np.random.choice(len(probs), p=probs)
             action_name = state.action_to_string(current_player, action)
 
+            # Get top 3 alternative candidates
+            sorted_indices = np.argsort(probs)[::-1]
+            for idx in sorted_indices:
+                if idx == action:
+                    continue # Skip selected action
+                if probs[idx] <= 0:
+                    continue
+                cand_name = state.action_to_string(current_player, idx)
+                top_candidates.append({"name": cand_name, "prob": float(probs[idx])})
+                if len(top_candidates) >= 3:
+                    break
+
             state.apply_action(action)
 
         # Record State
         info = extract_state_info(state.rust_game.get_state())
         info["action_name"] = action_name
+        info["top_candidates"] = top_candidates
         history.append(info)
 
     logging.info(f"Game over. Winner: {state.rust_game.get_state().winner}")
