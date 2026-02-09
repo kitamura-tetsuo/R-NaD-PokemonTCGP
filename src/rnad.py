@@ -9,6 +9,7 @@ import time
 import pickle
 import os
 import re
+import deckgym
 from typing import NamedTuple, Tuple, List, Dict, Any, Optional
 from src.models import DeckGymNet
 from functools import partial
@@ -166,6 +167,13 @@ class RNaDLearner:
         # JIT the update function
         self._update_fn = jax.jit(partial(self._update_pure, apply_fn=self.network.apply, config=self.config, optimizer=self.optimizer))
 
+        # Batched Simulator in Rust
+        self.batched_sim = deckgym.PyBatchedSimulator(
+            config.deck_id_1,
+            config.deck_id_2,
+            config.batch_size
+        )
+
     def init(self, key):
         dummy_obs = jnp.zeros((1, *self.obs_shape))
         self.params = self.network.init(key, dummy_obs)
@@ -208,92 +216,74 @@ class RNaDLearner:
         return metrics
 
     def generate_trajectories(self, key):
-        envs = [self.game.new_initial_state() for _ in range(self.config.batch_size)]
-
-        active = [True] * self.config.batch_size
-
+        initial_obs = self.batched_sim.reset(seed=int(jax.random.randint(key, (), 0, 1000000)))
+        
         # Storage per environment
         env_trajs = [{'obs': [], 'act': [], 'rew': [], 'log_prob': []} for _ in range(self.config.batch_size)]
+        
+        active_mask = np.ones(self.config.batch_size, dtype=bool)
+        current_obs = np.array(initial_obs)
 
-        while any(active):
-            current_obs = []
-            indices = []
-
-            for i, env in enumerate(envs):
-                if active[i]:
-                    if env.is_terminal():
-                        active[i] = False
-                        continue
-                    
-                    if env.is_chance_node():
-                        # Handle chance node
-                        outcomes, probs = zip(*env.chance_outcomes())
-                        a = np.random.choice(outcomes, p=probs)
-                        env.apply_action(a)
-                        continue
-
-                    player = env.current_player()
-                    current_obs.append(env.observation_tensor(player))
-                    indices.append(i)
-
-            if not current_obs:
-                break
-
-            current_obs_np = np.stack(current_obs)
-
-            logits, _ = self.network.apply(self.params, jax.random.PRNGKey(0), current_obs_np)
+        while active_mask.any():
+            # 1. Get Logits for active environments
+            # We pass all observations to local model, but only use those where active_mask is True
+            # For simplicity, we can just pass all and mask later.
+            logits, _ = self.network.apply(self.params, jax.random.PRNGKey(0), current_obs)
             logits = np.array(logits)
 
-            # Mask illegal actions
-            start_indices = len(indices)
-            valid_indices_mask = []
+            # 2. Get Legal Actions and Mask
+            legal_actions_batch = self.batched_sim.get_legal_actions()
             
-            for idx, i in enumerate(indices):
-                legal = envs[i].legal_actions()
-                if not legal:
-                    logging.warning(f"Env {i} stuck: No legal actions (not terminal). Marking terminal.")
-                    active[i] = False
-                    valid_indices_mask.append(False)
-                else:
-                    valid_indices_mask.append(True)
+            # Mask illegal actions
+            for i in range(self.config.batch_size):
+                if active_mask[i]:
+                    legal = legal_actions_batch[i]
+                    if not legal:
+                        # This should not happen if logic in Rust is correct (game ends when no actions)
+                        # but we keep safety check.
+                        active_mask[i] = False
+                        continue
+                        
                     mask = np.ones(logits.shape[-1], dtype=bool)
                     mask[legal] = False
-                    logits[idx][mask] = -1e9
+                    logits[i][mask] = -1e9
 
+            # 3. Sample Actions
             probs = jax.nn.softmax(logits)
             probs = np.array(probs)
-
+            
             actions = []
-            for idx, i in enumerate(indices):
-                if not valid_indices_mask[idx]:
-                    # Produce dummy action to keep array sizes consistent if needed, 
-                    # but we won't use it.
-                    # Actually, the loops below iterate `indices` again.
-                    # We should just skip the logic for this index.
+            log_probs = []
+            for i in range(self.config.batch_size):
+                if active_mask[i]:
+                    p = probs[i]
+                    p = p / p.sum()
+                    a = np.random.choice(len(p), p=p)
+                    actions.append(a)
+                    log_probs.append(np.log(p[a] + 1e-10))
+                else:
                     actions.append(0) # Dummy
-                    continue
+                    log_probs.append(0.0)
 
-                p = probs[idx]
-                p = p / p.sum()
-                a = np.random.choice(len(p), p=p)
-                actions.append(a)
+            # 4. Step Environment
+            next_obs, rewards, dones, _, stepped_mask = self.batched_sim.step(actions)
+            
+            # 5. Store data
+            for i in range(self.config.batch_size):
+                if active_mask[i] and stepped_mask[i]:
+                    env_trajs[i]['obs'].append(current_obs[i])
+                    env_trajs[i]['act'].append(actions[i])
+                    env_trajs[i]['log_prob'].append(log_probs[i])
+                    env_trajs[i]['rew'].append(rewards[i])
+                    
+                    if dones[i]:
+                        active_mask[i] = False
+                elif active_mask[i]:
+                    # Environment was active but didn't actually step (e.g. error or terminal state reached in chance node?)
+                    # In our case, Rust step returns false if already done.
+                    active_mask[i] = False
 
-                # Store state info
-                env_trajs[i]['obs'].append(current_obs[idx])
-                env_trajs[i]['act'].append(a)
-                env_trajs[i]['log_prob'].append(np.log(p[a] + 1e-10))
-
-                # Capture current player BEFORE step to assign reward correctly
-                current_player = envs[i].current_player()
-
-                # Step
-                envs[i].apply_action(a)
-
-                # Reward for the player who acted
-                # OpenSpiel rewards() returns a list of rewards for all players for the last transition
-                rewards = envs[i].rewards()
-                r = rewards[current_player]
-                env_trajs[i]['rew'].append(r)
+            current_obs = np.array(next_obs)
 
         # Pad trajectories to max length
         max_len = max(len(t['obs']) for t in env_trajs)
