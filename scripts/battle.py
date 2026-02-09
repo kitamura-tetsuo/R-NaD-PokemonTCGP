@@ -18,8 +18,8 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 def parse_args():
     parser = argparse.ArgumentParser(description="Run a battle between two agents.")
     parser.add_argument("--checkpoint", type=str, default=None, help="Path to checkpoint file (optional). If not provided, uses random weights.")
-    parser.add_argument("--deck1", type=str, default="deckgym-core/example_decks/mewtwoex.txt", help="Path to deck 1 file.")
-    parser.add_argument("--deck2", type=str, default="deckgym-core/example_decks/mewtwoex.txt", help="Path to deck 2 file.")
+    parser.add_argument("--deck_id_1", type=str, default="deckgym-core/example_decks/mewtwoex.txt", help="Path to deck 1 file.")
+    parser.add_argument("--deck_id_2", type=str, default="deckgym-core/example_decks/mewtwoex.txt", help="Path to deck 2 file.")
     parser.add_argument("--output", type=str, default="battle.html", help="Path to output HTML file.")
     parser.add_argument("--seed", type=int, default=42, help="Random seed.")
     return parser.parse_args()
@@ -277,11 +277,11 @@ def main():
 
     # Config
     config = RNaDConfig(
-        deck_id_1=args.deck1,
-        deck_id_2=args.deck2
+        deck_id_1=args.deck_id_1,
+        deck_id_2=args.deck_id_2
     )
 
-    logging.info(f"Initializing Learner with deck1={args.deck1}, deck2={args.deck2}")
+    logging.info(f"Initializing Learner with deck1={args.deck_id_1}, deck2={args.deck_id_2}")
     learner = RNaDLearner("deckgym_ptcgp", config)
     learner.init(rng)
 
