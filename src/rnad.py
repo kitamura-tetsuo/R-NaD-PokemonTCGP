@@ -187,6 +187,31 @@ class RNaDLearner:
             return logits
         self._inference_fn = _inference_fn
 
+    def save_checkpoint(self, path: str, step: int):
+        data = {
+            'params': self.params,
+            'fixed_params': self.fixed_params,
+            'opt_state': self.opt_state,
+            'step': step,
+            'config': self.config
+        }
+        with open(path, 'wb') as f:
+            pickle.dump(data, f)
+        logging.info(f"Checkpoint saved to {path} at step {step}")
+
+    def load_checkpoint(self, path: str) -> int:
+        with open(path, 'rb') as f:
+            data = pickle.load(f)
+        self.params = data['params']
+        self.fixed_params = data['fixed_params']
+        self.opt_state = data['opt_state']
+        step = data['step']
+        # We generally trust the loaded config to match roughly or ignore it,
+        # or we could assert config compatibility.
+        # For now, we assume the user knows what they are doing.
+        logging.info(f"Checkpoint loaded from {path}, resuming from step {step}")
+        return step
+
     def init(self, key):
         dummy_obs = jnp.zeros((1, *self.obs_shape))
         self.params = self.network.init(key, dummy_obs)
@@ -318,31 +343,6 @@ class TrajectoryGenerator(threading.Thread):
 
     def get_batch(self):
         return self.queue.get()
-
-    def save_checkpoint(self, path: str, step: int):
-        data = {
-            'params': self.params,
-            'fixed_params': self.fixed_params,
-            'opt_state': self.opt_state,
-            'step': step,
-            'config': self.config
-        }
-        with open(path, 'wb') as f:
-            pickle.dump(data, f)
-        logging.info(f"Checkpoint saved to {path} at step {step}")
-
-    def load_checkpoint(self, path: str) -> int:
-        with open(path, 'rb') as f:
-            data = pickle.load(f)
-        self.params = data['params']
-        self.fixed_params = data['fixed_params']
-        self.opt_state = data['opt_state']
-        step = data['step']
-        # We generally trust the loaded config to match roughly or ignore it,
-        # or we could assert config compatibility.
-        # For now, we assume the user knows what they are doing.
-        logging.info(f"Checkpoint loaded from {path}, resuming from step {step}")
-        return step
 
 def train_loop(config: RNaDConfig, experiment_manager: Optional[Any] = None, checkpoint_dir: str = "checkpoints", resume_checkpoint: Optional[str] = None):
     learner = RNaDLearner("deckgym_ptcgp", config)
