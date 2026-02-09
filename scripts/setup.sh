@@ -1,8 +1,6 @@
 #!/bin/bash
 set -e
 
-git submodule update --init --recursive
-
 # Cleanup on exit
 trap "rm -f requirements_temp.txt" EXIT
 
@@ -33,7 +31,7 @@ uv pip install -r requirements_temp.txt
 # Try to install deckgym-core if it exists and is not empty
 if [ -d "deckgym-core" ] && [ "$(ls -A deckgym-core)" ]; then
     echo "Installing deckgym-core..."
-    (cd deckgym-core && maturin develop)
+        (cd deckgym-core && maturin develop)
 else
     echo "deckgym-core directory is empty or missing. Skipping installation."
 fi
