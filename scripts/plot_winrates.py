@@ -196,8 +196,8 @@ def main():
     parser.add_argument("--control_checkpoint", type=str, required=True, help="Path to the control checkpoint for Player 2.")
     parser.add_argument("--decks", type=str, nargs='+', required=True, help="List of deck files/IDs.")
     parser.add_argument("--output", type=str, default="winrates.png", help="Output plot filename.")
-    parser.add_argument("--num_games", type=int, default=100, help="Number of games per deck pair.")
-    parser.add_argument("--batch_size", type=int, default=32, help="Batch size for simulation.")
+    parser.add_argument("--num_games", type=int, default=8, help="Number of games per deck pair.")
+    parser.add_argument("--batch_size", type=int, default=8, help="Batch size for simulation.")
     parser.add_argument("--cache_file", type=str, default="winrates.json", help="Cache file for win rates.")
 
     args = parser.parse_args()
