@@ -180,6 +180,13 @@ class RNaDLearner:
             config.damage_reward
         )
 
+        # JIT the inference function for speed
+        @jax.jit
+        def _inference_fn(params, obs):
+            logits, _ = self.network.apply(params, jax.random.PRNGKey(0), obs)
+            return logits
+        self._inference_fn = _inference_fn
+
     def init(self, key):
         dummy_obs = jnp.zeros((1, *self.obs_shape))
         self.params = self.network.init(key, dummy_obs)
@@ -231,62 +238,26 @@ class RNaDLearner:
         current_obs = np.array(initial_obs)
 
         while active_mask.any():
-            # 1. Get Logits for active environments
-            # We pass all observations to local model, but only use those where active_mask is True
-            # For simplicity, we can just pass all and mask later.
-            logits, _ = self.network.apply(self.params, jax.random.PRNGKey(0), current_obs)
-            logits = np.array(logits)
+            # 1. Get Logits for all environments (including inactive ones, masked in Rust)
+            logits = self._inference_fn(self.params, current_obs)
+            logits_np = np.array(logits)
 
-            # 2. Get Legal Actions and Mask
-            legal_actions_batch = self.batched_sim.get_legal_actions()
+            # 2. Sample and Step in Rust (Parallelized!)
+            (next_obs, rewards, dones, _, valid_mask, actions, log_probs) = \
+                self.batched_sim.sample_and_step(logits_np)
             
-            # Mask illegal actions
+            # 3. Store transitions
             for i in range(self.config.batch_size):
-                if active_mask[i]:
-                    legal = legal_actions_batch[i]
-                    if not legal:
-                        # This should not happen if logic in Rust is correct (game ends when no actions)
-                        # but we keep safety check.
-                        active_mask[i] = False
-                        continue
-                        
-                    mask = np.ones(logits.shape[-1], dtype=bool)
-                    mask[legal] = False
-                    logits[i][mask] = -1e9
-
-            # 3. Sample Actions
-            probs = jax.nn.softmax(logits)
-            probs = np.array(probs)
-            
-            actions = []
-            log_probs = []
-            for i in range(self.config.batch_size):
-                if active_mask[i]:
-                    p = probs[i]
-                    p = p / p.sum()
-                    a = np.random.choice(len(p), p=p)
-                    actions.append(a)
-                    log_probs.append(np.log(p[a] + 1e-10))
-                else:
-                    actions.append(0) # Dummy
-                    log_probs.append(0.0)
-
-            # 4. Step Environment
-            next_obs, rewards, dones, _, stepped_mask = self.batched_sim.step(actions)
-            
-            # 5. Store data
-            for i in range(self.config.batch_size):
-                if active_mask[i] and stepped_mask[i]:
+                if active_mask[i] and valid_mask[i]:
                     env_trajs[i]['obs'].append(current_obs[i])
                     env_trajs[i]['act'].append(actions[i])
-                    env_trajs[i]['log_prob'].append(log_probs[i])
                     env_trajs[i]['rew'].append(rewards[i])
+                    env_trajs[i]['log_prob'].append(log_probs[i])
                     
                     if dones[i]:
                         active_mask[i] = False
-                elif active_mask[i]:
-                    # Environment was active but didn't actually step (e.g. error or terminal state reached in chance node?)
-                    # In our case, Rust step returns false if already done.
+                elif active_mask[i] and not valid_mask[i]:
+                    # This should not happen if logic in Rust is correct
                     active_mask[i] = False
 
             current_obs = np.array(next_obs)
@@ -296,10 +267,10 @@ class RNaDLearner:
         if max_len == 0:
              # Should not happen if game is valid
             return {
-                'obs': jnp.zeros((1, self.config.batch_size, *self.obs_shape)),
-                'act': jnp.zeros((1, self.config.batch_size), dtype=np.int32),
-                'rew': jnp.zeros((1, self.config.batch_size)),
-                'log_prob': jnp.zeros((1, self.config.batch_size))
+                'obs': jnp.zeros((max_len, self.config.batch_size, *self.obs_shape)),
+                'act': jnp.zeros((max_len, self.config.batch_size), dtype=np.int32),
+                'rew': jnp.zeros((max_len, self.config.batch_size)),
+                'log_prob': jnp.zeros((max_len, self.config.batch_size))
             }
 
         def pad(data, shape, dtype=np.float32, value=0):
@@ -317,6 +288,36 @@ class RNaDLearner:
             'log_prob': jnp.array(pad('log_prob', ()))
         }
         return batch
+
+import queue
+import threading
+
+class TrajectoryGenerator(threading.Thread):
+    def __init__(self, learner, num_workers=1, max_queue_size=10):
+        super().__init__()
+        self.learner = learner
+        self.num_workers = num_workers
+        self.queue = queue.Queue(maxsize=max_queue_size)
+        self.stopped = False
+        self.daemon = True
+
+    def run(self):
+        worker_id = 0
+        while not self.stopped:
+            try:
+                key = jax.random.PRNGKey(worker_id)
+                batch = self.learner.generate_trajectories(key)
+                self.queue.put(batch)
+                worker_id += 1
+            except Exception as e:
+                logging.error(f"Error in TrajectoryGenerator: {e}")
+                break
+
+    def stop(self):
+        self.stopped = True
+
+    def get_batch(self):
+        return self.queue.get()
 
     def save_checkpoint(self, path: str, step: int):
         data = {
@@ -385,8 +386,16 @@ def train_loop(config: RNaDConfig, experiment_manager: Optional[Any] = None, che
     # Save interval
     save_interval = config.save_interval if hasattr(config, 'save_interval') else 1000
 
+    # Start Trajectory Generator
+    generator = TrajectoryGenerator(learner)
+    generator.start()
+
     for step in range(start_step, config.max_steps):
-        metrics = learner.train_step(jax.random.PRNGKey(step), step)
+        # 1. Get batch from background generator
+        batch = generator.get_batch()
+
+        # 2. Update
+        metrics = learner.update(batch, step)
 
         if step % 10 == 0:
             logging.info(f"Step {step}: {metrics}")
