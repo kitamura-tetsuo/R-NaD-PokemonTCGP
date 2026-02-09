@@ -111,16 +111,13 @@ class RNaDConfig(NamedTuple):
     win_reward: float = 1.0
     point_reward: float = 0.0
     damage_reward: float = 0.0
-<<<<<<< add-jax-profiler-15018126619909108173
     enable_profiler: bool = False
     profiler_dir: str = "runs/profile"
     profile_start_step: int = 10
     profile_num_steps: int = 10
-=======
     past_self_play: bool = False
     test_interval: int = 10
     test_games: int = 8
->>>>>>> main
 
 def v_trace(
     v_tm1: jnp.ndarray, # (T, B)

@@ -24,13 +24,10 @@ def main():
     parser.add_argument("--win_reward", type=float, default=1.0, help="Reward for winning")
     parser.add_argument("--point_reward", type=float, default=0.0, help="Reward per point gained")
     parser.add_argument("--damage_reward", type=float, default=0.0, help="Reward per damage dealt")
-<<<<<<< add-jax-profiler-15018126619909108173
     parser.add_argument("--enable_profiler", action="store_true", help="Enable JAX profiler")
     parser.add_argument("--profiler_dir", type=str, default="runs/profile", help="Directory to save profiler trace")
     parser.add_argument("--profile_start_step", type=int, default=10, help="Step to start profiling")
     parser.add_argument("--profile_num_steps", type=int, default=10, help="Number of steps to profile")
-=======
-    
     # League expansion arguments
     parser.add_argument("--league_decks", type=str, nargs="+", default=None, help="List of deck files for the league")
     parser.add_argument("--league_rates", type=float, nargs="+", default=None, help="Relative participation rates for the league decks")
@@ -39,7 +36,6 @@ def main():
     parser.add_argument("--past_self_play", action="store_true", help="Enable past self-play (training against past checkpoints)")
     parser.add_argument("--test_interval", type=int, default=10, help="Interval for evaluating against baseline (step 0)")
     parser.add_argument("--test_games", type=int, default=8, help="Number of games for evaluation per deck pair")
->>>>>>> main
 
     args = parser.parse_args()
 
@@ -71,16 +67,13 @@ def main():
         win_reward=args.win_reward,
         point_reward=args.point_reward,
         damage_reward=args.damage_reward,
-<<<<<<< add-jax-profiler-15018126619909108173
         enable_profiler=args.enable_profiler,
         profiler_dir=args.profiler_dir,
         profile_start_step=args.profile_start_step,
-        profile_num_steps=args.profile_num_steps
-=======
+        profile_num_steps=args.profile_num_steps,
         past_self_play=args.past_self_play,
         test_interval=args.test_interval,
         test_games=args.test_games
->>>>>>> main
     )
 
     # Initialize ExperimentManager
