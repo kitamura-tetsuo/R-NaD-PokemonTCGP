@@ -17,8 +17,8 @@ def main():
     parser.add_argument("--num_blocks", type=int, default=4, help="Number of residual blocks")
     parser.add_argument("--checkpoint_dir", type=str, default="checkpoints", help="Directory to save/load checkpoints")
     parser.add_argument("--resume_checkpoint", type=str, default=None, help="Specific checkpoint file to resume from")
-    parser.add_argument("--log_interval", type=int, default=100, help="Logging interval")
-    parser.add_argument("--save_interval", type=int, default=1000, help="Checkpoint interval")
+    parser.add_argument("--log_interval", type=int, default=10, help="Logging interval")
+    parser.add_argument("--save_interval", type=int, default=10, help="Checkpoint interval")
     parser.add_argument("--deck_id_1", type=str, default="deckgym-core/example_decks/mewtwoex.txt", help="Path to deck file for player 1")
     parser.add_argument("--deck_id_2", type=str, default="deckgym-core/example_decks/mewtwoex.txt", help="Path to deck file for player 2")
     parser.add_argument("--win_reward", type=float, default=1.0, help="Reward for winning")
@@ -31,6 +31,8 @@ def main():
     parser.add_argument("--fixed_decks", type=str, nargs="+", default=None, help="List of decks that always participate in matches")
 
     parser.add_argument("--past_self_play", action="store_true", help="Enable past self-play (training against past checkpoints)")
+    parser.add_argument("--test_interval", type=int, default=10, help="Interval for evaluating against baseline (step 0)")
+    parser.add_argument("--test_games", type=int, default=8, help="Number of games for evaluation per deck pair")
 
     args = parser.parse_args()
 
@@ -62,7 +64,9 @@ def main():
         win_reward=args.win_reward,
         point_reward=args.point_reward,
         damage_reward=args.damage_reward,
-        past_self_play=args.past_self_play
+        past_self_play=args.past_self_play,
+        test_interval=args.test_interval,
+        test_games=args.test_games
     )
 
     # Initialize ExperimentManager

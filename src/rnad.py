@@ -22,6 +22,21 @@ try:
 except ImportError:
     logging.warning("deckgym_openspiel not found. Assuming environment is available via pyspiel.")
 
+# Try importing deckgym (needed for PyGameState if not available in deckgym_openspiel)
+# This is used for exact evaluation in evaluate_against_baseline
+try:
+    import deckgym
+    if hasattr(deckgym, 'deckgym') and hasattr(deckgym.deckgym, 'PyGameState'):
+        PyGameState = deckgym.deckgym.PyGameState
+    elif hasattr(deckgym, 'PyGameState'):
+        PyGameState = deckgym.PyGameState
+    else:
+        # Fallback
+        from deckgym.deckgym import PyGameState
+except ImportError:
+    PyGameState = None
+    pass
+
 # Fix deckgym import if necessary
 try:
     import deckgym
@@ -97,6 +112,8 @@ class RNaDConfig(NamedTuple):
     point_reward: float = 0.0
     damage_reward: float = 0.0
     past_self_play: bool = False
+    test_interval: int = 10
+    test_games: int = 8
 
 def v_trace(
     v_tm1: jnp.ndarray, # (T, B)
@@ -314,13 +331,15 @@ class RNaDLearner:
         # Sample decks
         if self.config.league_config:
             decks_1, decks_2 = self.config.league_config.sample_decks(self.config.batch_size)
-            reset_result = self.batched_sim.reset(
-                seed=int(jax.random.randint(key, (), 0, 1000000)),
-                deck_ids_1=decks_1,
-                deck_ids_2=decks_2
-            )
         else:
-            reset_result = self.batched_sim.reset(seed=int(jax.random.randint(key, (), 0, 1000000)))
+            decks_1 = [self.config.deck_id_1] * self.config.batch_size
+            decks_2 = [self.config.deck_id_2] * self.config.batch_size
+
+        reset_result = self.batched_sim.reset(
+            seed=int(jax.random.randint(key, (), 0, 1000000)),
+            deck_ids_1=decks_1,
+            deck_ids_2=decks_2
+        )
         
         # New signature: reset(..) -> (obs, current_players)
         # Note: If deckgym wasn't updated correctly, this unpack will fail.
@@ -474,6 +493,173 @@ class TrajectoryGenerator(threading.Thread):
     def get_batch(self):
         return self.queue.get()
 
+def evaluate_against_baseline(learner: RNaDLearner, baseline_params: Any, config: RNaDConfig, num_games: int) -> Dict[str, float]:
+    """
+    Evaluates the current learner against a baseline (e.g., step 0) using PyGameState.
+    Iterates through all deck combinations configured in LeagueConfig or default decks.
+    """
+    if PyGameState is None:
+        logging.warning("PyGameState not available. Skipping evaluation.")
+        return {}
+        
+    decks_1 = [config.deck_id_1]
+    decks_2 = [config.deck_id_2]
+    
+    if config.league_config:
+        # Sort decks by rates descending, stable sort preserves original order for ties
+        # User requested: "test で使用するデッキは重み順の上位3デッキに変更して下さい。"
+        zipped = list(zip(config.league_config.decks, config.league_config.rates))
+        zipped.sort(key=lambda x: x[1], reverse=True)
+        top_decks = [d for d, r in zipped[:3]]
+        
+        decks_1 = top_decks
+        decks_2 = top_decks
+        
+    # We want to test every combination of d1 vs d2
+    # For each pair, we run num_games
+    # We want to know:
+    # 1. Win rate of Current (P1) vs Baseline (P2)
+    # 2. Win rate of Current (P2) vs Baseline (P1) ?? 
+    # The user request says: "step==0 の時のチェックポイントの結果と対戦をします。" 
+    # and "リーグであれば組み合わせ毎の勝率と、全組み合わせの平均の勝率の計算をしてmlflowのtestパラメータとして保存して下さい。"
+    
+    results = {}
+    total_wins = 0
+    total_games = 0
+    
+    # Pre-compile inference functions
+    # learner.network is already transformed
+    
+    # Helper to run a batch of games for a specific deck pair
+    def run_pair(d1_path, d2_path, current_params_p1, baseline_params_p2, n_games):
+        # We can reuse the learner's network definition
+        # But we need to handle the loop carefully to avoid JIT overhead if possible,
+        # or just rely on the fact that the network is the same.
+        
+        # We'll use a simple batched loop similar to plot_winrates.py
+        # but integrated here.
+        
+        batch_size = min(config.batch_size, n_games)
+        wins = 0
+        ties = 0
+        played = 0
+        
+        while played < n_games:
+            current_batch = min(batch_size, n_games - played)
+            
+            # Init games
+            games = [PyGameState(d1_path, d2_path, None) for _ in range(current_batch)]
+            
+            active_mask = np.ones(current_batch, dtype=bool)
+            current_obs = np.array([g.encode_observation() for g in games], dtype=np.float32)
+            
+            while active_mask.any():
+                # Inference
+                # We need to obtain logits for both players
+                # P1 = current_params_p1
+                # P2 = baseline_params_p2
+                
+                # Get current players
+                p1_indices = []
+                p2_indices = []
+                active_indices = np.where(active_mask)[0]
+                
+                for idx in active_indices:
+                    cp = games[idx].get_state().current_player
+                    if cp == 0:
+                        p1_indices.append(idx)
+                    else:
+                        p2_indices.append(idx)
+                
+                batch_logits = np.zeros((current_batch, learner.num_actions), dtype=np.float32)
+                
+                if p1_indices:
+                    obs_p1 = current_obs[p1_indices]
+                    logits_p1 = learner._inference_fn(current_params_p1, obs_p1)
+                    batch_logits[p1_indices] = np.array(logits_p1)
+                
+                if p2_indices:
+                    obs_p2 = current_obs[p2_indices]
+                    logits_p2 = learner._inference_fn(baseline_params_p2, obs_p2)
+                    batch_logits[p2_indices] = np.array(logits_p2)
+
+                # Step
+                actions = []
+                for i in range(current_batch):
+                    if not active_mask[i]:
+                        actions.append(0)
+                        continue
+                        
+                    legal = games[i].legal_actions()
+                    logits = batch_logits[i]
+                    # Mask illegal
+                    # We can do a simpler mask here since we are in Python loop
+                    # robust softmax sampling
+                    
+                    # Create a safe logits array
+                    safe_logits = np.full_like(logits, -1e9)
+                    safe_logits[legal] = logits[legal]
+                    
+                    l_max = np.max(safe_logits[legal])
+                    exp_l = np.exp(safe_logits[legal] - l_max)
+                    probs = exp_l / np.sum(exp_l)
+                    
+                    # Sample
+                    a_legal_idx = np.random.choice(len(legal), p=probs)
+                    a = legal[a_legal_idx]
+                    actions.append(a)
+                
+                # Apply actions
+                next_obs_list = []
+                for i in range(current_batch):
+                    if active_mask[i]:
+                        try:
+                            done, p0_won = games[i].step_with_id(actions[i])
+                            if done:
+                                active_mask[i] = False
+                                outcome = games[i].get_state().winner
+                                if outcome is not None:
+                                    if outcome.winner == 0:
+                                        wins += 1
+                                    elif outcome.is_tie:
+                                        ties += 1
+                                next_obs_list.append(np.zeros_like(current_obs[0]))
+                            else:
+                                next_obs_list.append(games[i].encode_observation())
+                        except Exception as e:
+                            logging.error(f"Error in eval step: {e}")
+                            active_mask[i] = False
+                            next_obs_list.append(np.zeros_like(current_obs[0]))
+                    else:
+                        next_obs_list.append(np.zeros_like(current_obs[0]))
+                
+                current_obs = np.array(next_obs_list, dtype=np.float32)
+
+            played += current_batch
+            
+        return wins, ties
+
+    import itertools
+    for d1, d2 in itertools.product(decks_1, decks_2):
+        d1_name = os.path.splitext(os.path.basename(d1))[0]
+        d2_name = os.path.splitext(os.path.basename(d2))[0]
+        
+        # Eval: Current (P1) vs Baseline (P2)
+        wins, ties = run_pair(d1, d2, learner.params, baseline_params, num_games)
+        
+        # Calculate win rate (ignoring ties for win/loss ratio, or counting as 0.5?
+        # Standard: wins / total
+        wr = wins / num_games
+        results[f"test_winrate_{d1_name}_vs_{d2_name}"] = wr
+        
+        total_wins += wins
+        total_games += num_games
+        
+    if total_games > 0:
+        results["test_winrate_mean"] = total_wins / total_games
+    
+    return results
+
 def train_loop(config: RNaDConfig, experiment_manager: Optional[Any] = None, checkpoint_dir: str = "checkpoints", resume_checkpoint: Optional[str] = None):
     learner = RNaDLearner("deckgym_ptcgp", config)
     learner.init(jax.random.PRNGKey(42))
@@ -519,6 +705,27 @@ def train_loop(config: RNaDConfig, experiment_manager: Optional[Any] = None, che
     # Start Trajectory Generator
     generator = TrajectoryGenerator(learner)
     generator.start()
+    
+    # Capture baseline parameters (Step 0)
+    baseline_params = None
+    # If we are at step 0, we can use current params
+    if start_step == 0:
+        baseline_params = learner.params
+        # We might want to save this explicitly if not already saved
+        # But we can also rely on checkpoint_0.pkl being created/loaded
+    else:
+        # Try to load checkpoint 0
+        try:
+            cp0 = os.path.join(checkpoint_dir, "checkpoint_0.pkl")
+            if os.path.exists(cp0):
+                with open(cp0, 'rb') as f:
+                    data = pickle.load(f)
+                baseline_params = data['params']
+                logging.info("Loaded baseline parameters from checkpoint_0.pkl")
+            else:
+                logging.warning("checkpoint_0.pkl not found. Baseline evaluation will be skipped until it is found/created.")
+        except Exception as e:
+            logging.warning(f"Failed to load baseline parameters: {e}")
 
     for step in range(start_step, config.max_steps):
         # 1. Get batch from background generator
@@ -543,6 +750,32 @@ def train_loop(config: RNaDConfig, experiment_manager: Optional[Any] = None, che
         if step % save_interval == 0:
              ckpt_path = os.path.join(checkpoint_dir, f"checkpoint_{step}.pkl")
              learner.save_checkpoint(ckpt_path, step)
+        
+        # Periodic Evaluation against Baseline
+        if config.test_interval > 0 and step % config.test_interval == 0:
+             if baseline_params is None:
+                 # Try loading again (maybe it was created in this run)
+                 try:
+                    cp0 = os.path.join(checkpoint_dir, "checkpoint_0.pkl")
+                    if os.path.exists(cp0):
+                        with open(cp0, 'rb') as f:
+                            data = pickle.load(f)
+                        baseline_params = data['params']
+                 except Exception:
+                     pass
+            
+             if baseline_params is not None:
+                 logging.info(f"Step {step}: Running evaluation against baseline...")
+                 eval_metrics = evaluate_against_baseline(
+                     learner, 
+                     baseline_params, 
+                     config, 
+                     num_games=config.test_games
+                 )
+                 # Log to experiment manager
+                 if experiment_manager:
+                     experiment_manager.log_metrics(step, eval_metrics)
+                 logging.info(f"Step {step}: Evaluation results: {eval_metrics}")
 
     # Save final checkpoint
     final_step = config.max_steps - 1
