@@ -37,7 +37,7 @@ def main():
     )
 
     # Initialize ExperimentManager
-    experiment_manager = ExperimentManager(experiment_name="RNaD_Experiment")
+    experiment_manager = ExperimentManager(experiment_name="RNaD_Experiment", checkpoint_dir=args.checkpoint_dir)
 
     logging.info(f"Starting training with config: {config}")
 
