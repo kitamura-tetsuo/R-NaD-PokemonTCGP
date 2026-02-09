@@ -44,13 +44,13 @@ def get_deck_name(deck_path: str) -> str:
     name, _ = os.path.splitext(filename)
     return name
 
-def evaluate_pair(params, config, deck1_path: str, deck2_path: str, num_games: int, batch_size: int) -> Dict[str, int]:
+def evaluate_pair(p1_params, p2_params, config, deck1_path: str, deck2_path: str, num_games: int, batch_size: int) -> Dict[str, int]:
     """
-    Evaluates a pair of decks using the given params.
+    Evaluates a pair of decks using the given params for P1 and P2.
     Returns: {'p1_wins': int, 'p2_wins': int, 'ties': int, 'total': int}
     """
 
-    # Determine config values
+    # Determine config values (Assumes both players use same architecture config)
     if isinstance(config, dict):
         hidden_size = config.get('hidden_size', 256)
         num_blocks = config.get('num_blocks', 4)
@@ -96,54 +96,75 @@ def evaluate_pair(params, config, deck1_path: str, deck2_path: str, num_games: i
         active_mask = np.ones(current_batch_size, dtype=bool)
 
         while active_mask.any():
-            # Apply network
-            logits, _ = network.apply(params, current_obs)
-            logits = np.array(logits)
+            # Identify active games and current player
+            active_indices = np.where(active_mask)[0]
 
-            # Mask illegal actions
-            for i in range(current_batch_size):
-                if active_mask[i]:
-                    legal = games[i].legal_actions()
-                    if not legal:
-                        # No legal actions usually means game over or pass?
-                        # If game over, active_mask should have been false.
-                        # If pass, there should be a pass action in legal list.
-                        # If empty, something is wrong or game ended unexpectedly.
-                        active_mask[i] = False
-                        continue
+            p1_indices = []
+            p2_indices = []
 
-                    mask = np.ones(logits.shape[-1], dtype=bool)
-                    mask[legal] = False
-                    logits[i][mask] = -1e9
-
-            # Sample actions
-            actions = []
-            for i in range(current_batch_size):
-                if active_mask[i]:
-                    # Softmax with stability
-                    l = logits[i]
-                    l_max = np.max(l)
-                    exp_l = np.exp(l - l_max)
-                    probs = exp_l / np.sum(exp_l)
-
-                    a = np.random.choice(len(probs), p=probs)
-                    actions.append(a)
+            for idx in active_indices:
+                # Get current player (0 or 1)
+                state = games[idx].get_state()
+                cp = state.current_player
+                if cp == 0:
+                    p1_indices.append(idx)
                 else:
-                    actions.append(0)
+                    p2_indices.append(idx)
+
+            # Prepare logits array
+            batch_logits = np.zeros((current_batch_size, num_actions), dtype=np.float32)
+
+            # Inference for P1
+            if p1_indices:
+                obs_p1 = current_obs[p1_indices]
+                logits_p1, _ = network.apply(p1_params, obs_p1)
+                batch_logits[p1_indices] = np.array(logits_p1)
+
+            # Inference for P2
+            if p2_indices:
+                obs_p2 = current_obs[p2_indices]
+                logits_p2, _ = network.apply(p2_params, obs_p2)
+                batch_logits[p2_indices] = np.array(logits_p2)
+
+            # Mask illegal actions & Sample
+            actions = [0] * current_batch_size # Initialize list
+
+            for i in active_indices:
+                legal = games[i].legal_actions()
+                if not legal:
+                    active_mask[i] = False
+                    continue
+
+                logits = batch_logits[i]
+                mask = np.ones(logits.shape[-1], dtype=bool)
+                mask[legal] = False
+                logits[mask] = -1e9
+
+                # Softmax with stability
+                l_max = np.max(logits)
+                exp_l = np.exp(logits - l_max)
+                probs = exp_l / np.sum(exp_l)
+
+                a = np.random.choice(len(probs), p=probs)
+                actions[i] = a
 
             # Step environments
-            next_obs_list = []
+            next_obs_list = [None] * current_batch_size
+
+            # Pre-fill inactive with zeros (to maintain array shape/type)
             for i in range(current_batch_size):
-                if active_mask[i]:
+                if not active_mask[i]:
+                    next_obs_list[i] = np.zeros_like(current_obs[0])
+
+            for i in active_indices:
+                if active_mask[i]: # Check again as it might have been disabled if no legal actions
                     try:
-                        # Use step_with_id because actions[i] is a global action ID
                         done, p0_won = games[i].step_with_id(actions[i])
 
                         if done:
                             active_mask[i] = False
                             outcome = games[i].get_state().winner
                             if outcome is None:
-                                # This should theoretically not happen if done is True, but purely defensive
                                 results['ties'] += 1
                             elif outcome.is_tie:
                                 results['ties'] += 1
@@ -152,15 +173,13 @@ def evaluate_pair(params, config, deck1_path: str, deck2_path: str, num_games: i
                             elif outcome.winner == 1:
                                 results['p2_wins'] += 1
 
-                            next_obs_list.append(np.zeros_like(current_obs[0]))
+                            next_obs_list[i] = np.zeros_like(current_obs[0])
                         else:
-                            next_obs_list.append(games[i].encode_observation())
+                            next_obs_list[i] = games[i].encode_observation()
                     except Exception as e:
                         print(f"Error stepping game {i}: {e}")
                         active_mask[i] = False
-                        next_obs_list.append(np.zeros_like(current_obs[0]))
-                else:
-                    next_obs_list.append(np.zeros_like(current_obs[0]))
+                        next_obs_list[i] = np.zeros_like(current_obs[0])
 
             current_obs = np.array(next_obs_list, dtype=np.float32)
 
@@ -174,6 +193,7 @@ def evaluate_pair(params, config, deck1_path: str, deck2_path: str, num_games: i
 def main():
     parser = argparse.ArgumentParser(description="Plot win rates for DeckGym checkpoints.")
     parser.add_argument("--checkpoint_dir", type=str, required=True, help="Directory containing checkpoints.")
+    parser.add_argument("--control_checkpoint", type=str, required=True, help="Path to the control checkpoint for Player 2.")
     parser.add_argument("--decks", type=str, nargs='+', required=True, help="List of deck files/IDs.")
     parser.add_argument("--output", type=str, default="winrates.png", help="Output plot filename.")
     parser.add_argument("--num_games", type=int, default=100, help="Number of games per deck pair.")
@@ -181,6 +201,14 @@ def main():
     parser.add_argument("--cache_file", type=str, default="winrates.json", help="Cache file for win rates.")
 
     args = parser.parse_args()
+
+    # Load Control Checkpoint
+    try:
+        control_params, control_config, control_step = load_checkpoint(args.control_checkpoint)
+        print(f"Loaded control checkpoint from step {control_step}")
+    except Exception as e:
+        print(f"Failed to load control checkpoint: {e}")
+        sys.exit(1)
 
     # Load Cache
     cache = {}
@@ -208,9 +236,6 @@ def main():
 
     # Generate Pairs
     deck_pairs = list(itertools.product(args.decks, args.decks))
-    # Filter pairs if needed? The user said "all combinations".
-    # Usually A vs B and B vs A are distinct.
-    # Also A vs A.
 
     for step, cp_path in checkpoints:
         print(f"\nProcessing Checkpoint Step {step}...")
@@ -223,14 +248,16 @@ def main():
                 d2_name = get_deck_name(d2)
 
                 pair_key = f"{d1_name}_vs_{d2_name}"
-                cache_key = f"{step}_{pair_key}"
+                # Include control step in cache key to invalidate if control changes
+                cache_key = f"{step}_{pair_key}_vs_control_{control_step}"
 
                 if cache_key in cache:
                     print(f"  [Cached] {pair_key}")
                     res = cache[cache_key]
                 else:
                     print(f"  Evaluating {pair_key}...")
-                    res = evaluate_pair(params, config, d1, d2, args.num_games, args.batch_size)
+                    # P1 = Target (params), P2 = Control (control_params)
+                    res = evaluate_pair(params, control_params, config, d1, d2, args.num_games, args.batch_size)
                     cache[cache_key] = res
 
                     # Update cache file immediately
@@ -261,8 +288,8 @@ def main():
         plt.plot(data['steps'], data['win_rates'], marker='o', label=label)
 
     plt.xlabel('Checkpoint Step')
-    plt.ylabel('Win Rate (P1)')
-    plt.title('Win Rates per Checkpoint')
+    plt.ylabel('Win Rate (Target P1 vs Control P2)')
+    plt.title(f'Win Rates vs Control (Step {control_step})')
     plt.legend()
     plt.grid(True)
     plt.ylim(0, 1.0)
