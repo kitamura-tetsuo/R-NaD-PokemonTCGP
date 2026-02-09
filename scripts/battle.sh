@@ -1,6 +1,6 @@
 #!/bin/bash
 export PYTHONPATH=$(pwd)
-uv run scripts/battle.py \
+uv run src/battle.py \
     --checkpoint "checkpoints/checkpoint_1019.pkl" \
     --deck_id_1 "deckgym-core/example_decks/mewtwoex.txt" \
     --deck_id_2 "deckgym-core/example_decks/blastoiseex.txt" \
