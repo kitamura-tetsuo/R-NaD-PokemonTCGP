@@ -40,6 +40,10 @@ class RNaDConfig(NamedTuple):
     win_reward: float = 1.0
     point_reward: float = 0.0
     damage_reward: float = 0.0
+    enable_profiler: bool = False
+    profiler_dir: str = "runs/profile"
+    profile_start_step: int = 10
+    profile_num_steps: int = 10
 
 def v_trace(
     v_tm1: jnp.ndarray, # (T, B)
@@ -391,6 +395,14 @@ def train_loop(config: RNaDConfig, experiment_manager: Optional[Any] = None, che
     generator.start()
 
     for step in range(start_step, config.max_steps):
+        if config.enable_profiler:
+            if step == config.profile_start_step:
+                logging.info(f"Starting JAX profiler trace at step {step}. Saving to {config.profiler_dir}")
+                jax.profiler.start_trace(config.profiler_dir)
+            elif step == config.profile_start_step + config.profile_num_steps:
+                logging.info(f"Stopping JAX profiler trace at step {step}.")
+                jax.profiler.stop_trace()
+
         # 1. Get batch from background generator
         batch = generator.get_batch()
 

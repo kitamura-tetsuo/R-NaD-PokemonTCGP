@@ -24,6 +24,10 @@ def main():
     parser.add_argument("--win_reward", type=float, default=1.0, help="Reward for winning")
     parser.add_argument("--point_reward", type=float, default=0.0, help="Reward per point gained")
     parser.add_argument("--damage_reward", type=float, default=0.0, help="Reward per damage dealt")
+    parser.add_argument("--enable_profiler", action="store_true", help="Enable JAX profiler")
+    parser.add_argument("--profiler_dir", type=str, default="runs/profile", help="Directory to save profiler trace")
+    parser.add_argument("--profile_start_step", type=int, default=10, help="Step to start profiling")
+    parser.add_argument("--profile_num_steps", type=int, default=10, help="Number of steps to profile")
 
     args = parser.parse_args()
 
@@ -39,7 +43,11 @@ def main():
         deck_id_2=args.deck_id_2,
         win_reward=args.win_reward,
         point_reward=args.point_reward,
-        damage_reward=args.damage_reward
+        damage_reward=args.damage_reward,
+        enable_profiler=args.enable_profiler,
+        profiler_dir=args.profiler_dir,
+        profile_start_step=args.profile_start_step,
+        profile_num_steps=args.profile_num_steps
     )
 
     # Initialize ExperimentManager
