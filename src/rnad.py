@@ -447,13 +447,17 @@ class RNaDLearner:
         # Stats tracking
         episode_lengths = np.zeros(batch_size, dtype=int) # Game steps (not stored steps)
 
-        for _ in range(max_len):
+        for i_step in range(max_len):
             if not active_mask.any():
                 break
 
             # 1. Inference
+            t0 = time.time()
             logits = self._inference_fn(self.params, current_obs)
+            logits.block_until_ready()
+            t1 = time.time()
             logits_np = np.array(logits)
+            t2 = time.time()
 
             if use_past_self_play:
                 past_logits = self._inference_fn(past_params, current_obs)
@@ -465,8 +469,13 @@ class RNaDLearner:
                 final_logits = logits_np
 
             # 2. Sample and Step in Rust
+            t3 = time.time()
             (next_obs, rewards, dones, _, valid_mask, actions, log_probs, next_current_players) = \
                 self.batched_sim.sample_and_step(final_logits)
+            t4 = time.time()
+
+            if i_step % 10 == 0:
+                 logging.info(f"Step {i_step}: Inference(TPU)={t1-t0:.4f}s, Transfer(D->H)={t2-t1:.4f}s, Sim(Rust)={t4-t3:.4f}s")
             
             # 3. Store transitions
             for i in range(batch_size):

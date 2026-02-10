@@ -26,7 +26,7 @@ def main():
     parser.add_argument("--damage_reward", type=float, default=0.0, help="Reward per damage dealt")
     parser.add_argument("--enable_profiler", action="store_true", help="Enable JAX profiler")
     parser.add_argument("--profiler_dir", type=str, default="runs/profile", help="Directory to save profiler trace")
-    parser.add_argument("--profile_start_step", type=int, default=10, help="Step to start profiling")
+    parser.add_argument("--profile_start_step", type=int, default=0, help="Step to start profiling")
     parser.add_argument("--profile_num_steps", type=int, default=10, help="Number of steps to profile")
     
     # League expansion arguments

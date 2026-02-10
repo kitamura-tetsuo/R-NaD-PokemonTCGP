@@ -6,3 +6,4 @@ mlruns/*
 checkpoints/*
 deckgym.so
 deckgym_openspiel/
+runs/**
