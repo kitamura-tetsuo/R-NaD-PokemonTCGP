@@ -470,6 +470,8 @@ class RNaDLearner:
 
             # 2. Sample and Step in Rust
             t3 = time.time()
+            # Rust now expects numpy array input and returns numpy arrays
+            # logits_np is already numpy array (float32) from JAX
             (next_obs, rewards, dones, _, valid_mask, actions, log_probs, next_current_players) = \
                 self.batched_sim.sample_and_step(final_logits)
             t4 = time.time()
@@ -478,6 +480,16 @@ class RNaDLearner:
                  logging.info(f"Step {i_step}: Inference(TPU)={t1-t0:.4f}s, Transfer(D->H)={t2-t1:.4f}s, Sim(Rust)={t4-t3:.4f}s")
             
             # 3. Store transitions
+            # Since variables are already numpy arrays, we can slice them directly
+            # However, the storage logic iterates by batch.
+            # Let's see if we can optimize storage later. For now, keep iteration but use direct indexing.
+
+            # We need to make sure we don't break existing logic.
+            # The current logic iterates `range(batch_size)`.
+            # next_obs is now (batch, obs_dim)
+            # rewards is (batch,)
+            # etc.
+
             for i in range(batch_size):
                 if active_mask[i]:
                     if valid_mask[i]:
