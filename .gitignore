@@ -8,3 +8,4 @@ deckgym.so
 deckgym_openspiel/
 runs/**
 checkpoints_sample/
+battle.html
