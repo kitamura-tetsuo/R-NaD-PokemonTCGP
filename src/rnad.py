@@ -126,6 +126,8 @@ class RNaDConfig(NamedTuple):
     transformer_heads: int = 4
     transformer_embed_dim: int = 64
     transformer_seq_len: int = 16
+    timeout_reward: Optional[float] = None
+
 
 def v_trace(
     v_tm1: jnp.ndarray, # (T, B)
@@ -815,8 +817,11 @@ class RNaDLearner:
         for b in range(num_buffers):
             sb = state_buffers[b]
             if sb['active_mask'].any():
-                vals = self._value_fn(self.params, sb['current_obs'])
-                vals_np = np.array(vals).reshape(-1)
+                if self.config.timeout_reward is not None:
+                    vals_np = np.full(batch_size, self.config.timeout_reward, dtype=np.float32)
+                else:
+                    vals = self._value_fn(self.params, sb['current_obs'])
+                    vals_np = np.array(vals).reshape(-1)
                 # Map back to global indices
                 start_i = b * batch_size
                 for i in range(batch_size):

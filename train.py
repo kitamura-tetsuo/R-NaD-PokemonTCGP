@@ -46,6 +46,8 @@ def main():
     parser.add_argument("--transformer_embed_dim", type=int, default=256, help="Embedding dimension for transformer")
     parser.add_argument("--transformer_seq_len", type=int, default=32, help="Sequence length for transformer")
     parser.add_argument("--accumulation_steps", type=int, default=1, help="Number of steps to accumulate gradients before updating")
+    parser.add_argument("--timeout_reward", type=float, default=None, help="Fixed reward for timeout/draw (default: use bootstrap value)")
+
 
     args = parser.parse_args()
 
@@ -91,8 +93,11 @@ def main():
         transformer_heads=args.transformer_heads,
         transformer_embed_dim=args.transformer_embed_dim,
         transformer_seq_len=args.transformer_seq_len,
-        accumulation_steps=args.accumulation_steps
+        accumulation_steps=args.accumulation_steps,
+        timeout_reward=args.timeout_reward
     )
+
+
 
     # Initialize ExperimentManager
     experiment_manager = ExperimentManager(experiment_name="RNaD_Experiment", checkpoint_dir=args.checkpoint_dir)
