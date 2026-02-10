@@ -5,3 +5,4 @@ mlflow.db
 mlruns/*
 checkpoints/*
 deckgym.so
+deckgym_openspiel/

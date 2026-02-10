@@ -32,6 +32,13 @@ uv pip install -r requirements_temp.txt
 if [ -d "deckgym-core" ] && [ "$(ls -A deckgym-core)" ]; then
     echo "Installing deckgym-core..."
         (cd deckgym-core && maturin develop)
+    
+    # Copy deckgym_openspiel for local usage
+    if [ -d "deckgym-core/python/deckgym_openspiel" ]; then
+        echo "Copying deckgym_openspiel to root..."
+        rm -rf deckgym_openspiel
+        cp -r deckgym-core/python/deckgym_openspiel .
+    fi
 else
     echo "deckgym-core directory is empty or missing. Skipping installation."
 fi

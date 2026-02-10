@@ -117,7 +117,9 @@ class RNaDConfig(NamedTuple):
     profile_num_steps: int = 10
     past_self_play: bool = False
     test_interval: int = 10
+    test_interval: int = 10
     test_games: int = 8
+    unroll_length: int = 200
 
 def v_trace(
     v_tm1: jnp.ndarray, # (T, B)
@@ -125,7 +127,8 @@ def v_trace(
     rho_t: jnp.ndarray, # (T, B)
     gamma: float = 0.99,
     clip_rho_threshold: float = 1.0,
-    clip_pg_rho_threshold: float = 1.0
+    clip_pg_rho_threshold: float = 1.0,
+    bootstrap_value: Optional[jnp.ndarray] = None
 ) -> Tuple[jnp.ndarray, jnp.ndarray]:
     """
     Computes V-trace targets and advantages.
@@ -137,8 +140,16 @@ def v_trace(
     rho_bar_t = jnp.minimum(rho_t, clip_rho_threshold)
     c_bar_t = jnp.minimum(rho_t, clip_pg_rho_threshold)
 
-    # We need a bootstrap value for V_T. Assuming 0 for now as episodes end.
-    v_all = jnp.concatenate([v_tm1, jnp.zeros((1, v_tm1.shape[1]))], axis=0) # (T+1, B)
+    # We need a bootstrap value for V_T.
+    # v_tm1 has shape (T, B). bootstrap_value has shape (B,) or (1, B).
+    if bootstrap_value is None:
+        bootstrap_value = jnp.zeros((1, v_tm1.shape[1]))
+    else:
+        # Ensure shape (1, B)
+        if bootstrap_value.ndim == 1:
+            bootstrap_value = bootstrap_value[None, :]
+            
+    v_all = jnp.concatenate([v_tm1, bootstrap_value], axis=0) # (T+1, B)
 
     def scan_body(carry, x):
         acc = carry
@@ -205,7 +216,8 @@ def loss_fn(params, fixed_params, batch, apply_fn, config: RNaDConfig, alpha_rna
         rho,
         gamma=config.discount_factor,
         clip_rho_threshold=config.clip_rho_threshold,
-        clip_pg_rho_threshold=config.clip_pg_rho_threshold
+        clip_pg_rho_threshold=config.clip_pg_rho_threshold,
+        bootstrap_value=batch.get('bootstrap_value', None)
     )
 
     # Value Loss
@@ -239,6 +251,7 @@ class RNaDLearner:
             {
                 "deck_id_1": config.deck_id_1,
                 "deck_id_2": config.deck_id_2,
+                "max_game_length": config.unroll_length
             }
         )
         self.config = config
@@ -278,6 +291,13 @@ class RNaDLearner:
             logits, _ = self.network.apply(params, jax.random.PRNGKey(0), obs)
             return logits
         self._inference_fn = _inference_fn
+
+        # JIT the value function for bootstrapping
+        @jax.jit
+        def _value_fn(params, obs):
+            _, values = self.network.apply(params, jax.random.PRNGKey(0), obs)
+            return values
+        self._value_fn = _value_fn
 
     def save_checkpoint(self, path: str, step: int):
         data = {
@@ -371,8 +391,6 @@ class RNaDLearner:
         )
         
         # New signature: reset(..) -> (obs, current_players)
-        # Note: If deckgym wasn't updated correctly, this unpack will fail.
-        # But we updated it.
         initial_obs, initial_current_players = reset_result
 
         # Determine if we use past self-play
@@ -406,19 +424,33 @@ class RNaDLearner:
              # Randomly assign Agent to P1 (0) or P2 (1)
              agent_player_ids = np.random.randint(0, 2, size=self.config.batch_size)
 
-        # Storage per environment
-        env_trajs = [{'obs': [], 'act': [], 'rew': [], 'log_prob': []} for _ in range(self.config.batch_size)]
+        # Fixed size buffers
+        max_len = self.config.unroll_length
+        batch_size = self.config.batch_size
         
-        active_mask = np.ones(self.config.batch_size, dtype=bool)
+        obs_buf = np.zeros((max_len, batch_size, *self.obs_shape), dtype=np.float32)
+        act_buf = np.zeros((max_len, batch_size), dtype=np.int32)
+        rew_buf = np.zeros((max_len, batch_size), dtype=np.float32)
+        log_prob_buf = np.zeros((max_len, batch_size), dtype=np.float32)
+        
+        ptrs = np.zeros(batch_size, dtype=int) # Position in buffer for each env
+        
+        active_mask = np.ones(batch_size, dtype=bool)
         current_obs = np.array(initial_obs)
         current_players = np.array(initial_current_players)
 
         # Track episode outcomes
         # 0: Tie, 1: P1 Win, 2: P2 Win
-        episode_outcomes = np.zeros(self.config.batch_size, dtype=int)
-        outcome_recorded = np.zeros(self.config.batch_size, dtype=bool)
+        episode_outcomes = np.zeros(batch_size, dtype=int)
+        outcome_recorded = np.zeros(batch_size, dtype=bool)
+        
+        # Stats tracking
+        episode_lengths = np.zeros(batch_size, dtype=int) # Game steps (not stored steps)
 
-        while active_mask.any():
+        for _ in range(max_len):
+            if not active_mask.any():
+                break
+
             # 1. Inference
             logits = self._inference_fn(self.params, current_obs)
             logits_np = np.array(logits)
@@ -427,110 +459,89 @@ class RNaDLearner:
                 past_logits = self._inference_fn(past_params, current_obs)
                 past_logits_np = np.array(past_logits)
                 
-                # Combine logits based on whose turn it is
-                # If current_players[i] == agent_player_ids[i], it is Agent's turn -> use logits_np
-                # Else it is Past's turn -> use past_logits_np
-                
                 mask_agent = (current_players == agent_player_ids)
-                # Ensure shape compatibility for broadcasting if necessary
-                # logits_np is (B, A), mask_agent is (B,)
                 final_logits = np.where(mask_agent[:, None], logits_np, past_logits_np)
             else:
                 final_logits = logits_np
 
-            # 2. Sample and Step in Rust (Parallelized!)
-            # Note: sample_and_step now returns current_players as the last element
+            # 2. Sample and Step in Rust
             (next_obs, rewards, dones, _, valid_mask, actions, log_probs, next_current_players) = \
                 self.batched_sim.sample_and_step(final_logits)
             
             # 3. Store transitions
-            for i in range(self.config.batch_size):
-                if active_mask[i] and valid_mask[i]:
-                    # Determine if we should store this transition
-                    # We store if it was the Agent's turn.
-                    # logic: current_players[i] was the player who acted to produce (next_obs, reward)
-                    # So if current_players[i] == agent_player_ids[i], we store.
-                    
-                    should_store = True
-                    if use_past_self_play:
-                        if current_players[i] != agent_player_ids[i]:
-                            should_store = False
-                    
-                    if should_store:
-                        env_trajs[i]['obs'].append(current_obs[i])
-                        env_trajs[i]['act'].append(actions[i])
-                        env_trajs[i]['rew'].append(rewards[i])
-                        env_trajs[i]['log_prob'].append(log_probs[i])
-                    
-                    if dones[i]:
-                        active_mask[i] = False
-                        if not outcome_recorded[i]:
-                            # Determine outcome based on reward
-                            # rewards[i] is for the actor (current_players[i])
-                            actor = current_players[i]
-                            r = rewards[i]
+            for i in range(batch_size):
+                if active_mask[i]:
+                    if valid_mask[i]:
+                        episode_lengths[i] += 1
+                        
+                        # Determine if we should store this transition
+                        should_store = True
+                        if use_past_self_play:
+                            if current_players[i] != agent_player_ids[i]:
+                                should_store = False
+                        
+                        if should_store:
+                            idx = ptrs[i]
+                            if idx < max_len:
+                                obs_buf[idx, i] = current_obs[i]
+                                act_buf[idx, i] = actions[i]
+                                rew_buf[idx, i] = rewards[i]
+                                log_prob_buf[idx, i] = log_probs[i]
+                                ptrs[i] += 1
+                        
+                        if dones[i]:
+                            active_mask[i] = False
+                            if not outcome_recorded[i]:
+                                # Determine outcome based on reward
+                                actor = current_players[i]
+                                r = rewards[i]
 
-                            # Assumes point_reward and damage_reward are 0 or small enough
-                            if abs(r) > 1e-3:
-                                # Decisive
-                                if r > 0:
-                                    # Actor won
-                                    episode_outcomes[i] = 1 if actor == 0 else 2
+                                if abs(r) > 1e-3:
+                                    if r > 0:
+                                        episode_outcomes[i] = 1 if actor == 0 else 2
+                                    else:
+                                        episode_outcomes[i] = 2 if actor == 0 else 1
                                 else:
-                                    # Actor lost -> Opponent won
-                                    episode_outcomes[i] = 2 if actor == 0 else 1
-                            else:
-                                episode_outcomes[i] = 0 # Tie
+                                    episode_outcomes[i] = 0 # Tie
 
-                            outcome_recorded[i] = True
+                                outcome_recorded[i] = True
 
-                elif active_mask[i] and not valid_mask[i]:
-                    active_mask[i] = False
+                    else:
+                        active_mask[i] = False
 
             current_obs = np.array(next_obs)
             current_players = np.array(next_current_players)
 
         # Calculate stats
-        episode_lengths = [len(t['obs']) for t in env_trajs]
-        mean_episode_length = np.mean(episode_lengths) if episode_lengths else 0.0
-        max_episode_length = np.max(episode_lengths) if episode_lengths else 0.0
+        mean_episode_length = np.mean(episode_lengths)
+        max_episode_length_stat = np.max(episode_lengths)
 
         p1_wins = np.sum(episode_outcomes == 1)
         p2_wins = np.sum(episode_outcomes == 2)
         ties = np.sum(episode_outcomes == 0)
-        total_games = self.config.batch_size
+        total_games = batch_size
 
         p1_win_rate = p1_wins / total_games
         decisive_rate = (p1_wins + p2_wins) / total_games
         tie_rate = ties / total_games
 
-        # Pad trajectories to max length
-        max_len = max(len(t['obs']) for t in env_trajs)
-        if max_len == 0:
-             # Should not happen if game is valid
-            return {
-                'obs': jnp.zeros((max_len, self.config.batch_size, *self.obs_shape)),
-                'act': jnp.zeros((max_len, self.config.batch_size), dtype=np.int32),
-                'rew': jnp.zeros((max_len, self.config.batch_size)),
-                'log_prob': jnp.zeros((max_len, self.config.batch_size))
-            }
-
-        def pad(data, shape, dtype=np.float32, value=0):
-            res = np.zeros((max_len, self.config.batch_size, *shape), dtype=dtype) + value
-            for i, t in enumerate(env_trajs):
-                l = len(t[data])
-                if l > 0:
-                    res[:l, i] = np.array(t[data])
-            return res
+        # Bootstrap value for truncated episodes
+        # If active_mask[i] is True, the game is truncated at `current_obs`.
+        bootstrap_value = np.zeros(batch_size, dtype=np.float32)
+        if active_mask.any():
+            vals = self._value_fn(self.params, current_obs)
+            vals_np = np.array(vals).reshape(-1)
+            bootstrap_value = np.where(active_mask, vals_np, 0.0)
 
         batch = {
-            'obs': jnp.array(pad('obs', self.obs_shape)),
-            'act': jnp.array(pad('act', (), dtype=np.int32)),
-            'rew': jnp.array(pad('rew', ())),
-            'log_prob': jnp.array(pad('log_prob', ())),
+            'obs': jnp.array(obs_buf),
+            'act': jnp.array(act_buf),
+            'rew': jnp.array(rew_buf),
+            'log_prob': jnp.array(log_prob_buf),
+            'bootstrap_value': jnp.array(bootstrap_value),
             'stats': {
                 'mean_episode_length': mean_episode_length,
-                'max_episode_length': max_episode_length,
+                'max_episode_length': max_episode_length_stat,
                 'p1_win_rate': p1_win_rate,
                 'decisive_rate': decisive_rate,
                 'tie_rate': tie_rate
