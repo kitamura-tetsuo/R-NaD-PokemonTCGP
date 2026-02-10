@@ -40,6 +40,11 @@ def main():
 
     parser.add_argument("--unroll_length", type=int, default=200, help="Fixed unroll length for trajectory generation. max is 1000")
     parser.add_argument("--num_buffers", type=int, default=2, help="Number of double-buffering buffers (N-buffering)")
+    parser.add_argument("--model_type", type=str, default="transformer", choices=["mlp", "transformer"], help="Type of model torso")
+    parser.add_argument("--transformer_layers", type=int, default=12, help="Number of transformer layers")
+    parser.add_argument("--transformer_heads", type=int, default=8, help="Number of transformer heads")
+    parser.add_argument("--transformer_embed_dim", type=int, default=256, help="Embedding dimension for transformer")
+    parser.add_argument("--transformer_seq_len", type=int, default=32, help="Sequence length for transformer")
 
     args = parser.parse_args()
 
@@ -79,7 +84,12 @@ def main():
         test_interval=args.test_interval,
         test_games=args.test_games,
         unroll_length=args.unroll_length,
-        num_buffers=args.num_buffers
+        num_buffers=args.num_buffers,
+        model_type=args.model_type,
+        transformer_layers=args.transformer_layers,
+        transformer_heads=args.transformer_heads,
+        transformer_embed_dim=args.transformer_embed_dim,
+        transformer_seq_len=args.transformer_seq_len
     )
 
     # Initialize ExperimentManager

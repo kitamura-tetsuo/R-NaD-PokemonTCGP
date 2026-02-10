@@ -1,1 +1,1 @@
-from .haiku_model import DeckGymNet, ResidualBlock
+from .haiku_model import DeckGymNet, ResidualBlock, TransformerNet, TransformerBlock

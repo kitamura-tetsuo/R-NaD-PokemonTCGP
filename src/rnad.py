@@ -11,7 +11,7 @@ import os
 import re
 import deckgym
 from typing import NamedTuple, Tuple, List, Dict, Any, Optional
-from src.models import DeckGymNet
+from src.models import DeckGymNet, TransformerNet
 from functools import partial
 
 # Configure logging
@@ -121,6 +121,11 @@ class RNaDConfig(NamedTuple):
     test_games: int = 8
     unroll_length: int = 200
     num_buffers: int = 2
+    model_type: str = "transformer" # "mlp" or "transformer"
+    transformer_layers: int = 2
+    transformer_heads: int = 4
+    transformer_embed_dim: int = 64
+    transformer_seq_len: int = 16
 
 def v_trace(
     v_tm1: jnp.ndarray, # (T, B)
@@ -260,11 +265,20 @@ class RNaDLearner:
         self.obs_shape = self.game.observation_tensor_shape()
 
         def forward(x):
-            net = DeckGymNet(
-                num_actions=self.num_actions,
-                hidden_size=config.hidden_size,
-                num_blocks=config.num_blocks
-            )
+            if config.model_type == "transformer":
+                net = TransformerNet(
+                    num_actions=self.num_actions,
+                    hidden_size=config.transformer_embed_dim,
+                    num_blocks=config.transformer_layers,
+                    num_heads=config.transformer_heads,
+                    seq_len=config.transformer_seq_len
+                )
+            else:
+                net = DeckGymNet(
+                    num_actions=self.num_actions,
+                    hidden_size=config.hidden_size,
+                    num_blocks=config.num_blocks
+                )
             return net(x)
 
         self.network = hk.transform(forward)
