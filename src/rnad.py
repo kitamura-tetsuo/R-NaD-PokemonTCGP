@@ -1107,10 +1107,10 @@ def train_loop(config: RNaDConfig, experiment_manager: Optional[Any] = None, che
                 except Exception:
                     pass
 
-        start_time = time.time()
-
         # 1. Get batch from background generator
         batch = generator.get_batch()
+
+        start_time = time.time()
 
         # 2. Update
         metrics = learner.update(batch, step)
