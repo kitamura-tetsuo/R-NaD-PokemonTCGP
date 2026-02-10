@@ -10,7 +10,10 @@ import numpy as np
 import pyspiel
 import deckgym
 import deckgym_openspiel
-from src.rnad import RNaDLearner, RNaDConfig
+import pickle
+import jax.numpy as jnp
+from src.rnad import RNaDConfig
+from src.models import DeckGymNet, TransformerNet
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -22,6 +25,8 @@ def parse_args():
     parser.add_argument("--deck_id_2", type=str, default="deckgym-core/example_decks/mewtwoex.txt", help="Path to deck 2 file.")
     parser.add_argument("--output", type=str, default="battle.html", help="Path to output HTML file.")
     parser.add_argument("--seed", type=int, default=42, help="Random seed.")
+    parser.add_argument("--device", type=str, choices=['cpu', 'gpu'], default='gpu', help="Device to run inference on (cpu or gpu).")
+    parser.add_argument("--disable_jit", action="store_true", help="Disable JIT compilation to save memory.")
     return parser.parse_args()
 
 def get_card_image_url(card_id):
@@ -395,6 +400,25 @@ def generate_html(history, output_path):
 def main():
     args = parse_args()
 
+    # JAX Configuration
+    if args.device == 'cpu':
+        jax.config.update("jax_platform_name", "cpu")
+        os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
+        os.environ["XLA_PYTHON_CLIENT_ALLOCATOR"] = "platform"
+        logging.info("Forced use of CPU for inference.")
+    elif args.device == 'gpu':
+        # Even if GPU, we might want to be careful with memory if the user is concerned
+        # But let's stick to default behavior unless they asked for CPU, 
+        # or maybe set preallocate=false just in case if they didn't specify but we are in this context.
+        # User asked: "GPUメモリやメインメモリにモデルが収まらない場合でも" -> implying CPU fallback or careful GPU usage.
+        # Let's set preallocate=false by default for this script as it's not training.
+        os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
+        os.environ["XLA_PYTHON_CLIENT_ALLOCATOR"] = "platform"
+    
+    if args.disable_jit:
+        jax.config.update("jax_disable_jit", True)
+        logging.info("JIT compilation disabled.")
+
     # Initialize Random Seed
     random.seed(args.seed)
     np.random.seed(args.seed)
@@ -406,18 +430,99 @@ def main():
         deck_id_2=args.deck_id_2
     )
 
-    logging.info(f"Initializing Learner with deck1={args.deck_id_1}, deck2={args.deck_id_2}")
-    learner = RNaDLearner("deckgym_ptcgp", config)
-    learner.init(rng)
+    logging.info(f"Initializing Game with deck1={args.deck_id_1}, deck2={args.deck_id_2}")
+    game = pyspiel.load_game(
+        "deckgym_ptcgp",
+        {
+            "deck_id_1": config.deck_id_1,
+            "deck_id_2": config.deck_id_2,
+            "max_game_length": config.unroll_length
+        }
+    )
+    num_actions = game.num_distinct_actions()
+    obs_shape = game.observation_tensor_shape()
+
+    # Network Definition (Local)
+    def forward(x):
+        # We need to decide model type. RNaDConfig defaults to "transformer".
+        # Checkpoints might contain config, but let's assume default or what user passed if we added args for it (we didn't).
+        # We will try to load config from checkpoint if available.
+        if config.model_type == "transformer":
+            net = TransformerNet(
+                num_actions=num_actions,
+                hidden_size=config.transformer_embed_dim,
+                num_blocks=config.transformer_layers,
+                num_heads=config.transformer_heads,
+                seq_len=config.transformer_seq_len
+            )
+        else:
+            net = DeckGymNet(
+                num_actions=num_actions,
+                hidden_size=config.hidden_size,
+                num_blocks=config.num_blocks
+            )
+        return net(x)
+
+    network = hk.transform(forward)
+    
+    # Initialize Params
+    dummy_obs = jnp.zeros((1, *obs_shape))
+    params = network.init(rng, dummy_obs)
 
     if args.checkpoint and os.path.exists(args.checkpoint):
         logging.info(f"Loading checkpoint: {args.checkpoint}")
-        learner.load_checkpoint(args.checkpoint)
+        try:
+            with open(args.checkpoint, 'rb') as f:
+                data = pickle.load(f)
+            
+            # Load params
+            params = data['params']
+            
+            # Update config from checkpoint if present
+            if 'config' in data:
+                loaded_config = data['config']
+                # Merge relevant fields if needed, or just warn if mismatch.
+                # Ideally we should have used the loaded config to build the network.
+                # But we built it above with default config. 
+                # Re-building network if config differs might be needed?
+                # Haiku transform is stateless regarding config, but the `forward` closure captured `config`.
+                # If `data['config']` is different, our `forward` might be wrong.
+                # Let's re-define `forward` and `network` if we load a config.
+                
+                # Use loaded config logic:
+                ckpt_config = data['config']
+                logging.info(f"Checkpoint config found. Model type: {ckpt_config.model_type}")
+                
+                def forward_ckpt(x):
+                    if ckpt_config.model_type == "transformer":
+                        net = TransformerNet(
+                            num_actions=num_actions,
+                            hidden_size=ckpt_config.transformer_embed_dim,
+                            num_blocks=ckpt_config.transformer_layers,
+                            num_heads=ckpt_config.transformer_heads,
+                            seq_len=ckpt_config.transformer_seq_len
+                        )
+                    else:
+                        net = DeckGymNet(
+                            num_actions=num_actions,
+                            hidden_size=ckpt_config.hidden_size,
+                            num_blocks=ckpt_config.num_blocks
+                        )
+                    return net(x)
+                
+                network = hk.transform(forward_ckpt)
+                # Re-init not needed as we have params, but good to check shapes? 
+                # We trust params match the config in the checkpoint.
+                
+        except Exception as e:
+            logging.error(f"Failed to load checkpoint: {e}")
+            logging.info("Using random weights instead.")
     else:
         logging.info("Using random weights (no checkpoint provided or found).")
 
     # Start Game
-    game = learner.game
+    # game = learner.game # Error here previously
+    # Game is already initialized as `game`
     state = game.new_initial_state()
 
     history = []
@@ -427,10 +532,13 @@ def main():
     initial_info["action_name"] = "Game Start"
     
     # Initial evaluations
+    # Initial evaluations
+    jit_apply = jax.jit(network.apply) if not args.disable_jit else network.apply
+
     for p in [0, 1]:
         obs_p = state.observation_tensor(p)
         obs_p_batched = np.array(obs_p)[None, ...]
-        _, val_p = learner.network.apply(learner.params, rng, obs_p_batched)
+        _, val_p = jit_apply(params, rng, obs_p_batched)
         initial_info[f"eval_{p}"] = float(val_p[0, 0])
         
     history.append(initial_info)
@@ -459,7 +567,7 @@ def main():
             # obs shape is (dim,), add batch dim (1, dim)
             obs_batched = obs[None, ...]
 
-            logits, _ = learner.network.apply(learner.params, rng, obs_batched)
+            logits, _ = jit_apply(params, rng, obs_batched)
             logits = np.array(logits[0]) # Remove batch dim
 
             legal_mask = np.zeros_like(logits, dtype=bool)
@@ -500,7 +608,7 @@ def main():
         for p in [0, 1]:
             obs_p = state.observation_tensor(p)
             obs_p_batched = np.array(obs_p)[None, ...]
-            _, val_p = learner.network.apply(learner.params, rng, obs_p_batched)
+            _, val_p = jit_apply(params, rng, obs_p_batched)
             info[f"eval_{p}"] = float(val_p[0, 0])
             
         history.append(info)
