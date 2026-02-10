@@ -120,6 +120,7 @@ class RNaDConfig(NamedTuple):
     test_interval: int = 10
     test_games: int = 8
     unroll_length: int = 200
+    num_buffers: int = 2
 
 def v_trace(
     v_tm1: jnp.ndarray, # (T, B)
@@ -276,14 +277,7 @@ class RNaDLearner:
         self._update_fn = jax.jit(partial(self._update_pure, apply_fn=self.network.apply, config=self.config, optimizer=self.optimizer))
 
         # Batched Simulator in Rust
-        self.batched_sim = deckgym.PyBatchedSimulator(
-            config.deck_id_1,
-            config.deck_id_2,
-            config.batch_size,
-            config.win_reward,
-            config.point_reward,
-            config.damage_reward
-        )
+
 
         # JIT the inference function for speed
         @jax.jit
@@ -377,198 +371,464 @@ class RNaDLearner:
         return metrics
 
     def generate_trajectories(self, key):
-        # Sample decks
+        num_buffers = self.config.num_buffers
+        batch_size = self.config.batch_size
+        max_len = self.config.unroll_length
+
+        # 1. Initialize Buffers and Simulators
+        simulators = []
+        state_buffers = [] # holds (current_obs, current_players, active_mask, episode_outcomes, outcome_recorded, episode_lengths)
+        traj_buffers = []  # holds (obs_buf, act_buf, rew_buf, log_prob_buf, ptrs)
+        futures = []
+
+        # Common deck sampling (could be per-buffer if desired, but sharing for simplicity)
         if self.config.league_config:
-            decks_1, decks_2 = self.config.league_config.sample_decks(self.config.batch_size)
+            decks_1, decks_2 = self.config.league_config.sample_decks(batch_size * num_buffers)
         else:
-            decks_1 = [self.config.deck_id_1] * self.config.batch_size
-            decks_2 = [self.config.deck_id_2] * self.config.batch_size
+            decks_1 = [self.config.deck_id_1] * (batch_size * num_buffers)
+            decks_2 = [self.config.deck_id_2] * (batch_size * num_buffers)
 
-        reset_result = self.batched_sim.reset(
-            seed=int(jax.random.randint(key, (), 0, 1000000)),
-            deck_ids_1=decks_1,
-            deck_ids_2=decks_2
-        )
-        
-        # New signature: reset(..) -> (obs, current_players)
-        initial_obs, initial_current_players = reset_result
-
-        # Determine if we use past self-play
+        # Check for past self-play
         use_past_self_play = False
         past_params = None
-        
         if self.config.past_self_play:
-            # Check for checkpoints
             checkpoint_dir = getattr(self.config, 'checkpoint_dir', 'checkpoints')
             if os.path.exists(checkpoint_dir):
                 checkpoints = [f for f in os.listdir(checkpoint_dir) if f.startswith("checkpoint_") and f.endswith(".pkl")]
-                if checkpoints and len(checkpoints) > 0:
-                     use_past_self_play = True
-                     # Pick a random checkpoint
-                     chosen_cp = np.random.choice(checkpoints)
-                     try:
-                         with open(os.path.join(checkpoint_dir, chosen_cp), 'rb') as f:
-                             data = pickle.load(f)
-                             past_params = data['params']
-                     except Exception as e:
-                         logging.warning(f"Failed to load past checkpoint {chosen_cp}: {e}")
-                         use_past_self_play = False
-            
+                if checkpoints:
+                    use_past_self_play = True
+                    chosen_cp = np.random.choice(checkpoints)
+                    try:
+                        with open(os.path.join(checkpoint_dir, chosen_cp), 'rb') as f:
+                            data = pickle.load(f)
+                            past_params = data['params']
+                    except Exception as e:
+                        logging.warning(f"Failed to load past checkpoint {chosen_cp}: {e}")
+                        use_past_self_play = False
             if not use_past_self_play and self.config.past_self_play:
-                 logging.warning("Past self-play requested but no checkpoints found. Falling back to self-play.")
+                logging.warning("Past self-play requested but no checkpoints found. Falling back to self-play.")
 
-        # Assign agent identity (0 or 1) per environment
-        # agent_player_ids[i] = 0 means Agent is Player 0, Past (or Self) is Player 1
-        agent_player_ids = np.zeros(self.config.batch_size, dtype=int)
-        if use_past_self_play:
-             # Randomly assign Agent to P1 (0) or P2 (1)
-             agent_player_ids = np.random.randint(0, 2, size=self.config.batch_size)
+        # Agent IDs (per buffer, per env)
+        buffer_agent_ids = []
 
-        # Fixed size buffers
-        max_len = self.config.unroll_length
-        batch_size = self.config.batch_size
-        
-        obs_buf = np.zeros((max_len, batch_size, *self.obs_shape), dtype=np.float32)
-        act_buf = np.zeros((max_len, batch_size), dtype=np.int32)
-        rew_buf = np.zeros((max_len, batch_size), dtype=np.float32)
-        log_prob_buf = np.zeros((max_len, batch_size), dtype=np.float32)
-        
-        ptrs = np.zeros(batch_size, dtype=int) # Position in buffer for each env
-        
-        active_mask = np.ones(batch_size, dtype=bool)
-        current_obs = np.array(initial_obs)
-        current_players = np.array(initial_current_players)
-
-        # Track episode outcomes
-        # 0: Tie, 1: P1 Win, 2: P2 Win
-        episode_outcomes = np.zeros(batch_size, dtype=int)
-        outcome_recorded = np.zeros(batch_size, dtype=bool)
-        
-        # Stats tracking
-        episode_lengths = np.zeros(batch_size, dtype=int) # Game steps (not stored steps)
-
-        for i_step in range(max_len):
-            if not active_mask.any():
-                break
-
-            # 1. Inference
-            t0 = time.time()
-            logits = self._inference_fn(self.params, current_obs)
-            logits.block_until_ready()
-            t1 = time.time()
-            logits_np = np.array(logits)
-            t2 = time.time()
-
-            if use_past_self_play:
-                past_logits = self._inference_fn(past_params, current_obs)
-                past_logits_np = np.array(past_logits)
-                
-                mask_agent = (current_players == agent_player_ids)
-                final_logits = np.where(mask_agent[:, None], logits_np, past_logits_np)
-            else:
-                final_logits = logits_np
-
-            # 2. Sample and Step in Rust
-            t3 = time.time()
-            # Rust now expects numpy array input and returns numpy arrays
-            # logits_np is already numpy array (float32) from JAX
-            (next_obs, rewards, dones, _, valid_mask, actions, log_probs, next_current_players) = \
-                self.batched_sim.sample_and_step(final_logits)
-            t4 = time.time()
-
-            if i_step % 10 == 0:
-                 logging.info(f"Step {i_step}: Inference(TPU)={t1-t0:.4f}s, Transfer(D->H)={t2-t1:.4f}s, Sim(Rust)={t4-t3:.4f}s")
+        for b in range(num_buffers):
+            # 1.1 Simulator
+            start_idx = b * batch_size
+            end_idx = start_idx + batch_size
             
-            # 3. Store transitions
-            # Since variables are already numpy arrays, we can slice them directly
-            # However, the storage logic iterates by batch.
-            # Let's see if we can optimize storage later. For now, keep iteration but use direct indexing.
+            sim = deckgym.PyBatchedSimulator(
+                self.config.deck_id_1,
+                self.config.deck_id_2,
+                batch_size,
+                self.config.win_reward,
+                self.config.point_reward,
+                self.config.damage_reward
+            )
+            
+            # Reset
+            initial_obs, initial_current_players = sim.reset(
+                seed=int(jax.random.randint(key, (), 0, 1000000)) + b,
+                deck_ids_1=decks_1[start_idx:end_idx],
+                deck_ids_2=decks_2[start_idx:end_idx]
+            )
 
-            # We need to make sure we don't break existing logic.
-            # The current logic iterates `range(batch_size)`.
-            # next_obs is now (batch, obs_dim)
-            # rewards is (batch,)
-            # etc.
+            simulators.append(sim)
 
-            for i in range(batch_size):
-                if active_mask[i]:
-                    if valid_mask[i]:
-                        episode_lengths[i] += 1
-                        
-                        # Determine if we should store this transition
-                        should_store = True
-                        if use_past_self_play:
-                            if current_players[i] != agent_player_ids[i]:
-                                should_store = False
-                        
-                        if should_store:
-                            idx = ptrs[i]
-                            if idx < max_len:
-                                obs_buf[idx, i] = current_obs[i]
-                                act_buf[idx, i] = actions[i]
-                                rew_buf[idx, i] = rewards[i]
-                                log_prob_buf[idx, i] = log_probs[i]
-                                ptrs[i] += 1
-                        
-                        if dones[i]:
-                            active_mask[i] = False
-                            if not outcome_recorded[i]:
-                                # Determine outcome based on reward
-                                actor = current_players[i]
-                                r = rewards[i]
+            # 1.2 State Buffer
+            active_mask = np.ones(batch_size, dtype=bool)
+            current_obs = np.array(initial_obs)
+            current_players = np.array(initial_current_players)
+            episode_outcomes = np.zeros(batch_size, dtype=int)
+            outcome_recorded = np.zeros(batch_size, dtype=bool)
+            episode_lengths = np.zeros(batch_size, dtype=int)
 
-                                if abs(r) > 1e-3:
-                                    if r > 0:
-                                        episode_outcomes[i] = 1 if actor == 0 else 2
-                                    else:
-                                        episode_outcomes[i] = 2 if actor == 0 else 1
-                                else:
-                                    episode_outcomes[i] = 0 # Tie
+            state_buffers.append({
+                'current_obs': current_obs,
+                'current_players': current_players,
+                'active_mask': active_mask,
+                'episode_outcomes': episode_outcomes,
+                'outcome_recorded': outcome_recorded,
+                'episode_lengths': episode_lengths
+            })
 
-                                outcome_recorded[i] = True
+            # 1.3 Trajectory Buffer
+            obs_buf = np.zeros((max_len, batch_size, *self.obs_shape), dtype=np.float32)
+            act_buf = np.zeros((max_len, batch_size), dtype=np.int32)
+            rew_buf = np.zeros((max_len, batch_size), dtype=np.float32)
+            log_prob_buf = np.zeros((max_len, batch_size), dtype=np.float32)
+            ptrs = np.zeros(batch_size, dtype=int)
 
-                    else:
-                        active_mask[i] = False
+            traj_buffers.append({
+                'obs_buf': obs_buf,
+                'act_buf': act_buf,
+                'rew_buf': rew_buf,
+                'log_prob_buf': log_prob_buf,
+                'ptrs': ptrs
+            })
 
-            current_obs = np.array(next_obs)
-            current_players = np.array(next_current_players)
+            # 1.4 Agent IDs
+            agent_ids = np.zeros(batch_size, dtype=int)
+            if use_past_self_play:
+                agent_ids = np.random.randint(0, 2, size=batch_size)
+            buffer_agent_ids.append(agent_ids)
 
-        # Calculate stats
-        mean_episode_length = np.mean(episode_lengths)
-        max_episode_length_stat = np.max(episode_lengths)
+            # 1.5 Prime Inference
+            # Dispatch async inference
+            logits = self._inference_fn(self.params, current_obs)
+            futures.append(logits)
 
-        p1_wins = np.sum(episode_outcomes == 1)
-        p2_wins = np.sum(episode_outcomes == 2)
-        ties = np.sum(episode_outcomes == 0)
-        total_games = batch_size
+        # 2. Pipelined Loop
+        # We run until ALL buffers have collected `max_len` steps (roughly).
+        # Actually, we run `max_len` iterations, filling buffers circularly.
+        # But wait, `max_len` is per trajectory.
+        # We structure the loop to fill `max_len` steps for each buffer.
+        
+        # NOTE: With interleaved execution, if all buffers need `max_len` steps, 
+        # we iterate `max_len` times, and in each iteration we process ALL buffers.
+        # But we must serialize the access to TPU (inference).
+        
+        # Loop Structure:
+        # for i_step in range(max_len):
+        #    for b in range(num_buffers):
+        #       Wait(futures[b])
+        #       Simulate(b)
+        #       Dispatch(futures[b])
+        
+        # This keeps the pipeline full:
+        # T0: Disp(0), Disp(1)
+        # T1: Wait(0) -> Sim(0) -> Disp(0)
+        # T2: Wait(1) -> Sim(1) -> Disp(1)
+        # ...
+        
+        for i_step in range(max_len):
+             # Check if we should stop early?
+             # If all active masks are false in ALL buffers?
+             all_done = True
+             for b in range(num_buffers):
+                 if state_buffers[b]['active_mask'].any():
+                     all_done = False
+                     break
+             if all_done:
+                 break
 
-        p1_win_rate = p1_wins / total_games
-        decisive_rate = (p1_wins + p2_wins) / total_games
-        tie_rate = ties / total_games
+             for b in range(num_buffers):
+                 sb = state_buffers[b]
+                 tb = traj_buffers[b]
+                 agent_ids = buffer_agent_ids[b]
+                 sim = simulators[b]
+                 
+                 if not sb['active_mask'].any():
+                     continue
 
-        # Bootstrap value for truncated episodes
-        # If active_mask[i] is True, the game is truncated at `current_obs`.
-        bootstrap_value = np.zeros(batch_size, dtype=np.float32)
-        if active_mask.any():
-            vals = self._value_fn(self.params, current_obs)
-            vals_np = np.array(vals).reshape(-1)
-            bootstrap_value = np.where(active_mask, vals_np, 0.0)
+                 # 2.1 Wait for Inference (and transfer D->H)
+                 t0 = time.time()
+                 logits = futures[b]
+                 logits.block_until_ready() # Ensure computation is done
+                 logits_np = np.array(logits) # Transfer to host
+                 t1 = time.time()
 
-        batch = {
-            'obs': jnp.array(obs_buf),
-            'act': jnp.array(act_buf),
-            'rew': jnp.array(rew_buf),
-            'log_prob': jnp.array(log_prob_buf),
-            'bootstrap_value': jnp.array(bootstrap_value),
+                 # Handle past self-play
+                 if use_past_self_play:
+                     past_logits = self._inference_fn(past_params, sb['current_obs'])
+                     past_logits_np = np.array(past_logits)
+                     mask_agent = (sb['current_players'] == agent_ids)
+                     final_logits = np.where(mask_agent[:, None], logits_np, past_logits_np)
+                 else:
+                     final_logits = logits_np
+
+                 # 2.2 Simulation (CPU)
+                 t3 = time.time()
+                 (next_obs, rewards, dones, _, valid_mask, actions, log_probs, next_current_players) = \
+                     sim.sample_and_step(final_logits)
+                 t4 = time.time()
+                 
+                 if i_step % 10 == 0 and b == 0:
+                     logging.info(f"Step {i_step} (Buf {b}): Inference+Transfer={t1-t0:.4f}s, Sim(Rust)={t4-t3:.4f}s")
+
+                 # 2.3 Dispatch Next Inference (Async)
+                 # We do this immediately after step to maximize overlap with storage/logic
+                 sb['current_obs'] = np.array(next_obs)
+                 sb['current_players'] = np.array(next_current_players)
+                 
+                 # Only dispatch if still active? 
+                 # We dispatch anyway, JAX handles ignoring results efficiently if masked later,
+                 # or we just simpler logic: always dispatch.
+                 # Optimization: only dispatch if active_mask.any() - checked at start of loop.
+                 if sb['active_mask'].any():
+                      futures[b] = self._inference_fn(self.params, sb['current_obs'])
+
+                 # 2.4 Storage & Logic
+                 for i in range(batch_size):
+                     if sb['active_mask'][i]:
+                         if valid_mask[i]:
+                             sb['episode_lengths'][i] += 1
+                             
+                             should_store = True
+                             if use_past_self_play:
+                                 if sb['current_players'][i] != agent_ids[i]:
+                                     should_store = False
+                             
+                             if should_store:
+                                 idx = tb['ptrs'][i]
+                                 if idx < max_len:
+                                     tb['obs_buf'][idx, i] = sb['current_obs'][i] # Wait, this is NEXT obs? No, current_obs was updated above to next_obs.
+                                     # Logic Check: standard RL stores (s_t, a_t, r_t, s_{t+1}).
+                                     # Here `obs_buf` usually stores s_t. 
+                                     # But we updated `sb['current_obs']` to `next_obs` BEFORE storage.
+                                     # **Correction**: We must store the observation used for *inference* (the one before step).
+                                     # We need to preserve `prev_obs` or similar.
+                                     pass 
+                 
+                 # **Fix Storage Logic**:
+                 # The standard loop was: 
+                 #   logit = model(curr)
+                 #   next, r = step(logit)
+                 #   store(curr, a, r)
+                 #   curr = next
+                 
+                 # My refactor above updated curr = next BEFORE storage.
+                 # Let's revert that specific part or fix access.
+                 # `initial_obs` / `prev_obs` is needed.
+                 
+                 # Re-retrieving correctness:
+                 # The `final_logits` were computed from `sb['current_obs']` (OLD).
+                 # So we should store `sb['current_obs']` (OLD).
+                 # But we overwrote it. 
+                 # Let's fix the order.
+                 
+        # ... Wait, I cannot edit inside the replacement content string comfortably with logic gaps.
+        # I will rewrite the loop body carefully in the ReplacementContent.
+        pass 
+
+    # Corrected method implementation
+    def generate_trajectories(self, key):
+        num_buffers = self.config.num_buffers
+        batch_size = self.config.batch_size
+        max_len = self.config.unroll_length
+
+        simulators = []
+        state_buffers = [] 
+        traj_buffers = []  
+        futures = []
+
+        if self.config.league_config:
+            decks_1, decks_2 = self.config.league_config.sample_decks(batch_size * num_buffers)
+        else:
+            decks_1 = [self.config.deck_id_1] * (batch_size * num_buffers)
+            decks_2 = [self.config.deck_id_2] * (batch_size * num_buffers)
+
+        use_past_self_play = False
+        past_params = None
+        if self.config.past_self_play:
+            checkpoint_dir = getattr(self.config, 'checkpoint_dir', 'checkpoints')
+            if os.path.exists(checkpoint_dir):
+                checkpoints = [f for f in os.listdir(checkpoint_dir) if f.startswith("checkpoint_") and f.endswith(".pkl")]
+                if checkpoints:
+                    use_past_self_play = True
+                    chosen_cp = np.random.choice(checkpoints)
+                    try:
+                        with open(os.path.join(checkpoint_dir, chosen_cp), 'rb') as f:
+                            data = pickle.load(f)
+                            past_params = data['params']
+                    except Exception as e:
+                        logging.warning(f"Failed to load past checkpoint {chosen_cp}: {e}")
+                        use_past_self_play = False
+
+        buffer_agent_ids = []
+
+        for b in range(num_buffers):
+            start_idx = b * batch_size
+            end_idx = start_idx + batch_size
+            
+            sim = deckgym.PyBatchedSimulator(
+                self.config.deck_id_1,
+                self.config.deck_id_2,
+                batch_size,
+                self.config.win_reward,
+                self.config.point_reward,
+                self.config.damage_reward
+            )
+            
+            initial_obs, initial_current_players = sim.reset(
+                seed=int(jax.random.randint(key, (), 0, 1000000)) + b,
+                deck_ids_1=decks_1[start_idx:end_idx],
+                deck_ids_2=decks_2[start_idx:end_idx]
+            )
+            simulators.append(sim)
+
+            current_obs = np.array(initial_obs)
+            current_players = np.array(initial_current_players)
+            
+            state_buffers.append({
+                'current_obs': current_obs,
+                'current_players': current_players,
+                'active_mask': np.ones(batch_size, dtype=bool),
+                'episode_outcomes': np.zeros(batch_size, dtype=int),
+                'outcome_recorded': np.zeros(batch_size, dtype=bool),
+                'episode_lengths': np.zeros(batch_size, dtype=int)
+            })
+
+            traj_buffers.append({
+                'obs_buf': np.zeros((max_len, batch_size, *self.obs_shape), dtype=np.float32),
+                'act_buf': np.zeros((max_len, batch_size), dtype=np.int32),
+                'rew_buf': np.zeros((max_len, batch_size), dtype=np.float32),
+                'log_prob_buf': np.zeros((max_len, batch_size), dtype=np.float32),
+                'ptrs': np.zeros(batch_size, dtype=int)
+            })
+
+            agent_ids = np.zeros(batch_size, dtype=int)
+            if use_past_self_play:
+                agent_ids = np.random.randint(0, 2, size=batch_size)
+            buffer_agent_ids.append(agent_ids)
+
+            # Prime Inference
+            futures.append(self._inference_fn(self.params, current_obs))
+
+        # Main Loop
+        for i_step in range(max_len):
+             # Check termination
+             is_any_active = False
+             for b in range(num_buffers):
+                 if state_buffers[b]['active_mask'].any():
+                     is_any_active = True
+                     break
+             if not is_any_active:
+                 break
+
+             for b in range(num_buffers):
+                 sb = state_buffers[b]
+                 tb = traj_buffers[b]
+                 agent_ids = buffer_agent_ids[b]
+                 sim = simulators[b]
+                 
+                 if not sb['active_mask'].any():
+                     continue
+
+                 # 1. Wait for Inference
+                 t0 = time.time()
+                 logits = futures[b]
+                 logits.block_until_ready()
+                 logits_np = np.array(logits)
+                 t1 = time.time()
+
+                 # Past self-play mixing
+                 final_logits = logits_np
+                 if use_past_self_play:
+                     past_logits = self._inference_fn(past_params, sb['current_obs'])
+                     past_logits_np = np.array(past_logits)
+                     mask_agent = (sb['current_players'] == agent_ids)
+                     final_logits = np.where(mask_agent[:, None], logits_np, past_logits_np)
+
+                 # 2. Step with Rust
+                 t3 = time.time()
+                 (next_obs, rewards, dones, _, valid_mask, actions, log_probs, next_current_players) = \
+                     sim.sample_and_step(final_logits)
+                 t4 = time.time()
+                 
+                 if i_step % 10 == 0 and b == 0:
+                     logging.info(f"Step {i_step} (Buf {b}): Inference+Transfer={t1-t0:.4f}s, Sim(Rust)={t4-t3:.4f}s")
+                 
+                 # 3. Storage
+                 old_obs = sb['current_obs'] # Store reference to old obs for trajectory
+                 
+                 for i in range(batch_size):
+                     if sb['active_mask'][i]:
+                         if valid_mask[i]:
+                             sb['episode_lengths'][i] += 1
+                             
+                             should_store = True
+                             if use_past_self_play:
+                                 if sb['current_players'][i] != agent_ids[i]:
+                                     should_store = False
+                             
+                             if should_store:
+                                 idx = tb['ptrs'][i]
+                                 if idx < max_len:
+                                     tb['obs_buf'][idx, i] = old_obs[i]
+                                     tb['act_buf'][idx, i] = actions[i]
+                                     tb['rew_buf'][idx, i] = rewards[i]
+                                     tb['log_prob_buf'][idx, i] = log_probs[i]
+                                     tb['ptrs'][i] += 1
+                         
+                         if dones[i]:
+                             sb['active_mask'][i] = False
+                             if not sb['outcome_recorded'][i]:
+                                 actor = sb['current_players'][i]
+                                 r = rewards[i]
+                                 if abs(r) > 1e-3:
+                                     if r > 0:
+                                         sb['episode_outcomes'][i] = 1 if actor == 0 else 2
+                                     else:
+                                         sb['episode_outcomes'][i] = 2 if actor == 0 else 1
+                                 else:
+                                     sb['episode_outcomes'][i] = 0
+                                 sb['outcome_recorded'][i] = True
+                         elif not valid_mask[i]:
+                             # Invalid action but not done? Usually implies skipping or error, 
+                             # but here handled as masking out without done. 
+                             # Or strict masking. Assuming keeping active if not done.
+                             # Original code set active_mask=False on invalid.
+                             sb['active_mask'][i] = False
+
+                 # 4. Update State & Dispatch Next
+                 sb['current_obs'] = np.array(next_obs)
+                 sb['current_players'] = np.array(next_current_players)
+                 
+                 if sb['active_mask'].any():
+                     futures[b] = self._inference_fn(self.params, sb['current_obs'])
+        
+        # Merge Results
+        # We need to concatenate the batch dimensions of all buffers
+        # Result buffers should be (max_len, total_batch_size, *)
+        
+        total_batch_size = batch_size * num_buffers
+        
+        merged_obs = np.concatenate([t['obs_buf'] for t in traj_buffers], axis=1)
+        merged_act = np.concatenate([t['act_buf'] for t in traj_buffers], axis=1)
+        merged_rew = np.concatenate([t['rew_buf'] for t in traj_buffers], axis=1)
+        merged_log_prob = np.concatenate([t['log_prob_buf'] for t in traj_buffers], axis=1)
+        
+        # Bootstrap values
+        # We need to run value fn on final observations for active envs
+        merged_bootstrap = np.zeros(total_batch_size, dtype=np.float32)
+        
+        for b in range(num_buffers):
+            sb = state_buffers[b]
+            if sb['active_mask'].any():
+                vals = self._value_fn(self.params, sb['current_obs'])
+                vals_np = np.array(vals).reshape(-1)
+                # Map back to global indices
+                start_i = b * batch_size
+                for i in range(batch_size):
+                    if sb['active_mask'][i]:
+                        merged_bootstrap[start_i + i] = vals_np[i]
+
+        # Stats
+        all_lengths = np.concatenate([s['episode_lengths'] for s in state_buffers])
+        all_outcomes = np.concatenate([s['episode_outcomes'] for s in state_buffers])
+        
+        mean_len = np.mean(all_lengths)
+        max_len_stat = np.max(all_lengths)
+        
+        p1_wins = np.sum(all_outcomes == 1)
+        p2_wins = np.sum(all_outcomes == 2)
+        ties = np.sum(all_outcomes == 0)
+        
+        batch_out = {
+            'obs': jnp.array(merged_obs),
+            'act': jnp.array(merged_act),
+            'rew': jnp.array(merged_rew),
+            'log_prob': jnp.array(merged_log_prob),
+            'bootstrap_value': jnp.array(merged_bootstrap),
             'stats': {
-                'mean_episode_length': mean_episode_length,
-                'max_episode_length': max_episode_length_stat,
-                'p1_win_rate': p1_win_rate,
-                'decisive_rate': decisive_rate,
-                'tie_rate': tie_rate
+                'mean_episode_length': mean_len,
+                'max_episode_length': max_len_stat,
+                'p1_win_rate': p1_wins / total_batch_size,
+                'decisive_rate': (p1_wins + p2_wins) / total_batch_size,
+                'tie_rate': ties / total_batch_size
             }
         }
-        return batch
+        return batch_out
 
 import queue
 import threading

@@ -39,6 +39,7 @@ def main():
     parser.add_argument("--test_games", type=int, default=8, help="Number of games for evaluation per deck pair")
 
     parser.add_argument("--unroll_length", type=int, default=200, help="Fixed unroll length for trajectory generation. max is 1000")
+    parser.add_argument("--num_buffers", type=int, default=2, help="Number of double-buffering buffers (N-buffering)")
 
     args = parser.parse_args()
 
@@ -77,7 +78,8 @@ def main():
         past_self_play=args.past_self_play,
         test_interval=args.test_interval,
         test_games=args.test_games,
-        unroll_length=args.unroll_length
+        unroll_length=args.unroll_length,
+        num_buffers=args.num_buffers
     )
 
     # Initialize ExperimentManager
