@@ -141,14 +141,14 @@ def generate_html(history, output_path):
         button {{ padding: 10px 20px; font-size: 16px; cursor: pointer; }}
         .status-bar {{ display: flex; justify-content: space-between; margin-bottom: 10px; font-weight: bold; }}
 
-        .board {{ display: flex; flex-direction: column; gap: 20px; }}
-        .player-area {{ border: 1px solid #ccc; padding: 10px; border-radius: 5px; }}
-        .player-area.current {{ border-color: #007bff; border-width: 2px; }}
+        .board {{ display: flex; flex-direction: row; gap: 20px; align-items: flex-start; }}
+        .player-area {{ border: 1px solid #ccc; padding: 10px; border-radius: 5px; flex: 1; min-width: 0; }}
+        .player-area.current {{ border-color: #007bff; border-width: 2px; background-color: #f8f9ff; }}
 
         .area-title {{ font-weight: bold; margin-bottom: 5px; }}
 
-        .zone {{ display: flex; gap: 10px; margin-bottom: 10px; align-items: flex-start; min-height: 150px; }}
-        .zone-title {{ width: 60px; font-size: 14px; color: #666; }}
+        .zone {{ display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 5px; align-items: flex-start; min-height: 80px; }}
+        .zone-title {{ width: 50px; font-size: 12px; color: #666; font-weight: bold; }}
 
         .card-container {{ position: relative; width: 50px; }}
         .card-img {{ width: 100%; border-radius: 5px; box-shadow: 2px 2px 5px rgba(0,0,0,0.2); }}
@@ -156,7 +156,9 @@ def generate_html(history, output_path):
         .status-icon {{ position: absolute; top: 0; right: 0; background: red; color: white; border-radius: 50%; width: 15px; height: 15px; font-size: 10px; display: flex; align-items: center; justify-content: center; }}
 
         .log {{ margin-top: 20px; max-height: 150px; overflow-y: auto; background: #eee; padding: 10px; font-family: monospace; }}
+        .chart-container {{ margin-top: 20px; height: 300px; }}
     </style>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
 <body>
     <div class="container">
@@ -173,6 +175,10 @@ def generate_html(history, output_path):
         </div>
 
         <div class="log" id="log-display"></div>
+
+        <div class="chart-container">
+            <canvas id="evalChart"></canvas>
+        </div>
     </div>
 
     <script>
@@ -243,7 +249,7 @@ def generate_html(history, output_path):
             const p1Html = renderPlayer(0, state);
             const p2Html = renderPlayer(1, state);
 
-            document.getElementById('board').innerHTML = p2Html + p1Html; // P2 on top? Or strictly P1, P2. Let's do P2 then P1 so P1 is at bottom.
+            document.getElementById('board').innerHTML = p1Html + p2Html; 
 
             // Update Log
             let logText = `Action: ${{state.action_name || "Start"}}`;
@@ -254,7 +260,107 @@ def generate_html(history, output_path):
                 }});
             }}
             document.getElementById('log-display').innerText = logText;
+
+            updateChart();
         }}
+
+        let chart;
+        function initChart() {{
+            const ctx = document.getElementById('evalChart').getContext('2d');
+            const labels = history.map((_, i) => i);
+            const evalP1 = history.map(h => h.eval_0 || 0);
+            const evalP2 = history.map(h => h.eval_1 || 0);
+
+            chart = new Chart(ctx, {{
+                type: 'line',
+                data: {{
+                    labels: labels,
+                    datasets: [
+                        {{
+                            label: 'Player 1 Eval',
+                            data: evalP1,
+                            borderColor: 'blue',
+                            fill: false,
+                            tension: 0.1
+                        }},
+                        {{
+                            label: 'Player 2 Eval',
+                            data: evalP2,
+                            borderColor: 'red',
+                            fill: false,
+                            tension: 0.1
+                        }}
+                    ]
+                }},
+                options: {{
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {{
+                        y: {{
+                            beginAtZero: false,
+                            title: {{ display: true, text: 'V-Value' }}
+                        }},
+                        x: {{
+                            title: {{ display: true, text: 'Step' }}
+                        }}
+                    }},
+                    plugins: {{
+                        annotation: {{
+                            annotations: {{
+                                line1: {{
+                                    type: 'line',
+                                    xMin: currentStep,
+                                    xMax: currentStep,
+                                    borderColor: 'black',
+                                    borderWidth: 2,
+                                    label: {{
+                                        content: 'Current',
+                                        enabled: true,
+                                        position: 'top'
+                                    }}
+                                }}
+                            }}
+                        }}
+                    }}
+                }}
+            }});
+        }}
+
+        // We need the annotation plugin for the vertical line
+        // But for simplicity, we can just use a custom plugin or just redraw the line.
+        // Let's use a simpler approach: vertical line plugin
+        const verticalLinePlugin = {{
+            id: 'verticalLine',
+            afterDraw: (chart) => {{
+                const ctx = chart.ctx;
+                const xAxis = chart.scales.x;
+                const yAxis = chart.scales.y;
+                const x = xAxis.getPixelForValue(currentStep);
+
+                ctx.save();
+                ctx.beginPath();
+                ctx.moveTo(x, yAxis.top);
+                ctx.lineTo(x, yAxis.bottom);
+                ctx.lineWidth = 2;
+                ctx.strokeStyle = 'rgba(0, 0, 0, 0.5)';
+                ctx.stroke();
+                ctx.restore();
+            }}
+        }};
+        Chart.register(verticalLinePlugin);
+
+        function updateChart() {{
+            if (chart) {{
+                // Update the vertical line position
+                if (chart.options.plugins.annotation && chart.options.plugins.annotation.annotations.line1) {{
+                    chart.options.plugins.annotation.annotations.line1.xMin = currentStep;
+                    chart.options.plugins.annotation.annotations.line1.xMax = currentStep;
+                }}
+                chart.update();
+            }}
+        }}
+
+        initChart();
 
         function nextTurn() {{
             if (currentStep < history.length - 1) {{
@@ -319,6 +425,14 @@ def main():
     # Record initial state
     initial_info = extract_state_info(state.rust_game.get_state())
     initial_info["action_name"] = "Game Start"
+    
+    # Initial evaluations
+    for p in [0, 1]:
+        obs_p = state.observation_tensor(p)
+        obs_p_batched = np.array(obs_p)[None, ...]
+        _, val_p = learner.network.apply(learner.params, rng, obs_p_batched)
+        initial_info[f"eval_{p}"] = float(val_p[0, 0])
+        
     history.append(initial_info)
 
     step_count = 0
@@ -381,6 +495,14 @@ def main():
         info = extract_state_info(state.rust_game.get_state())
         info["action_name"] = action_name
         info["top_candidates"] = top_candidates
+        
+        # Evaluations
+        for p in [0, 1]:
+            obs_p = state.observation_tensor(p)
+            obs_p_batched = np.array(obs_p)[None, ...]
+            _, val_p = learner.network.apply(learner.params, rng, obs_p_batched)
+            info[f"eval_{p}"] = float(val_p[0, 0])
+            
         history.append(info)
 
     logging.info(f"Game over. Winner: {state.rust_game.get_state().winner}")
