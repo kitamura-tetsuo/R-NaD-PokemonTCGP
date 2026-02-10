@@ -7,3 +7,4 @@ checkpoints/*
 deckgym.so
 deckgym_openspiel/
 runs/**
+checkpoints_sample/

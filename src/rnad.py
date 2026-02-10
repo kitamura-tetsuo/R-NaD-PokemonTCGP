@@ -709,7 +709,8 @@ class RNaDLearner:
                  logits = futures[b]
                  logits.block_until_ready()
                  logits_np = np.array(logits)
-                 t1 = time.time()
+                 if i_step % 100 == 0:
+                     t1 = time.time()
 
                  # Past self-play mixing
                  final_logits = logits_np
@@ -720,12 +721,12 @@ class RNaDLearner:
                      final_logits = np.where(mask_agent[:, None], logits_np, past_logits_np)
 
                  # 2. Step with Rust
-                 t3 = time.time()
+                 if i_step % 100 == 0:
+                     t3 = time.time()
                  (next_obs, rewards, dones, _, valid_mask, actions, log_probs, next_current_players) = \
                      sim.sample_and_step(final_logits)
-                 t4 = time.time()
-                 
-                 if i_step % 10 == 0 and b == 0:
+                 if i_step % 100 == 0:
+                     t4 = time.time()
                      logging.info(f"Step {i_step} (Buf {b}): Inference+Transfer={t1-t0:.4f}s, Sim(Rust)={t4-t3:.4f}s")
                  
                  # 3. Storage
@@ -1101,7 +1102,10 @@ def train_loop(config: RNaDConfig, experiment_manager: Optional[Any] = None, che
                 jax.profiler.start_trace(config.profiler_dir)
             elif step == config.profile_start_step + config.profile_num_steps:
                 logging.info(f"Stopping JAX profiler trace at step {step}.")
-                jax.profiler.stop_trace()
+                try:
+                    jax.profiler.stop_trace()
+                except Exception:
+                    pass
 
         start_time = time.time()
 

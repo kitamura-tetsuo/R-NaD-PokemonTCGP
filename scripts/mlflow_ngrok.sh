@@ -18,10 +18,10 @@ DRIVE_MLRUNS="/content/drive/MyDrive/R-NaD-PokemonTCGP_experiments/mlruns"
 
 if [ -d "$DRIVE_MLRUNS" ]; then
     echo "Serving MLflow from Google Drive: $DRIVE_MLRUNS"
-    nohup mlflow ui --backend-store-uri "$DRIVE_MLRUNS" --host 0.0.0.0 --port $PORT --allowed-hosts * > mlflow.log 2>&1 &
+    nohup mlflow ui --backend-store-uri "$DRIVE_MLRUNS" --host 0.0.0.0 --port $PORT --allowed-hosts "*" > mlflow.log 2>&1 &
 else
     echo "Serving MLflow from local ./mlruns"
-    nohup mlflow ui --host 0.0.0.0 --port $PORT --allowed-hosts * > mlflow.log 2>&1 &
+    nohup mlflow ui --host 0.0.0.0 --port $PORT --allowed-hosts "*" > mlflow.log 2>&1 &
 fi
 
 # 2. しばらく待機（起動完了を待つ）
