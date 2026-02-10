@@ -117,10 +117,10 @@ class RNaDConfig(NamedTuple):
     profile_num_steps: int = 10
     past_self_play: bool = False
     test_interval: int = 10
-    test_interval: int = 10
     test_games: int = 8
     unroll_length: int = 200
     num_buffers: int = 2
+    accumulation_steps: int = 1
     model_type: str = "transformer" # "mlp" or "transformer"
     transformer_layers: int = 2
     transformer_heads: int = 4
@@ -285,7 +285,12 @@ class RNaDLearner:
         self.params = None
         self.fixed_params = None
         self.opt_state = None
-        self.optimizer = optax.adam(learning_rate=config.learning_rate)
+        
+        base_optimizer = optax.adam(learning_rate=config.learning_rate)
+        if config.accumulation_steps > 1:
+            self.optimizer = optax.MultiSteps(base_optimizer, every_k_schedule=config.accumulation_steps)
+        else:
+            self.optimizer = base_optimizer
 
         # JIT the update function
         self._update_fn = jax.jit(partial(self._update_pure, apply_fn=self.network.apply, config=self.config, optimizer=self.optimizer))
@@ -1121,23 +1126,34 @@ def train_loop(config: RNaDConfig, experiment_manager: Optional[Any] = None, che
                 except Exception:
                     pass
 
-        # 1. Get batch from background generator
-        batch = generator.get_batch()
-
+        metrics_accum = {}
         start_time = time.time()
 
-        # 2. Update
-        metrics = learner.update(batch, step)
+        for i_acc in range(config.accumulation_steps):
+            # 1. Get batch from background generator
+            batch = generator.get_batch()
+
+            # 2. Update
+            metrics = learner.update(batch, step)
+            
+            for k, v in metrics.items():
+                if isinstance(v, (int, float, jnp.ndarray)):
+                    metrics_accum[k] = metrics_accum.get(k, 0) + v
 
         end_time = time.time()
 
+        # Average metrics
+        metrics = {k: v / config.accumulation_steps for k, v in metrics_accum.items()}
+
         # Calculate SPS
-        total_steps = metrics.get('mean_episode_length', 0) * config.batch_size
+        # metrics['mean_episode_length'] is already averaged.
+        # Total samples = mean_len * batch_size * num_buffers * accumulation_steps
+        total_samples = metrics.get('mean_episode_length', 0) * config.batch_size * config.num_buffers * config.accumulation_steps
         step_time = end_time - start_time
-        sps = total_steps / (step_time + 1e-6)
+        sps = total_samples / (step_time + 1e-6)
         metrics['sps'] = sps
 
-        if step % 10 == 0:
+        if step % config.log_interval == 0:
             logging.info(f"Step {step}: {metrics}")
 
         if experiment_manager and step % config.log_interval == 0:

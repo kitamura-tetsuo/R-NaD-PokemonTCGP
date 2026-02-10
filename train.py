@@ -45,6 +45,7 @@ def main():
     parser.add_argument("--transformer_heads", type=int, default=8, help="Number of transformer heads")
     parser.add_argument("--transformer_embed_dim", type=int, default=256, help="Embedding dimension for transformer")
     parser.add_argument("--transformer_seq_len", type=int, default=32, help="Sequence length for transformer")
+    parser.add_argument("--accumulation_steps", type=int, default=1, help="Number of steps to accumulate gradients before updating")
 
     args = parser.parse_args()
 
@@ -89,7 +90,8 @@ def main():
         transformer_layers=args.transformer_layers,
         transformer_heads=args.transformer_heads,
         transformer_embed_dim=args.transformer_embed_dim,
-        transformer_seq_len=args.transformer_seq_len
+        transformer_seq_len=args.transformer_seq_len,
+        accumulation_steps=args.accumulation_steps
     )
 
     # Initialize ExperimentManager

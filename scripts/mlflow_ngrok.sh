@@ -30,4 +30,4 @@ sleep 5
 # 3. ngrok でトンネルを作成
 # ※ 事前に ngrok config add-authtoken を実行している前提です
 echo "MLflow UI を ngrok で公開中..."
-ngrok http $PORT
+ngrok http $PORT &
