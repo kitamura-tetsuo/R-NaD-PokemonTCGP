@@ -10,12 +10,19 @@ from jax.experimental import jax2tf
 import numpy as np
 import re
 import pyspiel
+import subprocess
 
 # Import project modules
 from src.rnad import RNaDConfig
 from src.models import DeckGymNet, CardTransformerNet, TransformerNet
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+def get_git_hash():
+    try:
+        return subprocess.check_output(['git', 'rev-parse', 'HEAD']).strip().decode('utf-8')
+    except:
+        return "unknown"
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -25,10 +32,14 @@ def parse_args():
     return parser.parse_args()
 
 def load_checkpoint(args):
+    step = "unknown"
     if args.checkpoint:
         path = args.checkpoint
         if not os.path.exists(path):
              raise FileNotFoundError(f"Checkpoint {path} not found.")
+        m = re.search(r"checkpoint_(\d+).pkl", os.path.basename(path))
+        if m:
+            step = m.group(1)
     else:
         # Find latest
         if not os.path.exists(args.checkpoint_dir):
@@ -44,19 +55,23 @@ def load_checkpoint(args):
             return int(m.group(1)) if m else -1
 
         latest = max(checkpoints, key=get_step)
+        step = str(get_step(latest))
         path = os.path.join(args.checkpoint_dir, latest)
 
     logging.info(f"Loading checkpoint from {path}")
     with open(path, 'rb') as f:
         data = pickle.load(f)
-    return data
+    return data, step
 
 def main():
     args = parse_args()
-    data = load_checkpoint(args)
+    data, step = load_checkpoint(args)
 
     params = data['params']
     config = data.get('config', RNaDConfig())
+
+    git_hash = get_git_hash()
+    output_dir = os.path.join(args.output_dir, git_hash, str(step))
 
     logging.info(f"Model type from config: {config.model_type}")
 
@@ -141,8 +156,8 @@ def main():
 
     module = TFModule(tf_fn)
 
-    logging.info(f"Saving SavedModel to {args.output_dir}")
-    tf.saved_model.save(module, args.output_dir)
+    logging.info(f"Saving SavedModel to {output_dir}")
+    tf.saved_model.save(module, output_dir)
     logging.info("Done.")
 
 if __name__ == "__main__":
