@@ -158,6 +158,41 @@ class PrecomputedEmbedding(hk.Module):
         x = hk.Linear(self.output_dim)(x)
         return x
 
+class HybridEmbedding(hk.Module):
+    """汎用ベクトル(Static) + 補正パッチ(Residual) を組み合わせた埋め込み"""
+    def __init__(self, pretrained_matrix, output_dim, name=None):
+        super().__init__(name=name)
+        self.pretrained_matrix = pretrained_matrix # (NumCards, FeatureDim)
+        self.output_dim = output_dim
+
+    def __call__(self, card_ids):
+        # 1. Static Path (テキストの意味)
+        #    PrecomputedEmbedding 内で Linear 投影まで行われる
+        static_proj = PrecomputedEmbedding(
+            self.pretrained_matrix, 
+            self.output_dim, 
+            name="static_path"
+        )(card_ids)
+
+        # 2. Residual Path (IDごとの例外補正)
+        #    w_init=0 で初期化し、学習が進むにつれて例外を吸収する
+        num_cards = self.pretrained_matrix.shape[0]
+        valid_mask = (card_ids >= 0) & (card_ids < num_cards)
+        safe_ids = jnp.where(valid_mask, card_ids, 0)
+
+        residual_emb = hk.Embed(
+            vocab_size=num_cards,
+            embed_dim=self.output_dim,
+            w_init=hk.initializers.Constant(0.0), 
+            name="residual_path"
+        )(safe_ids)
+
+        # 無効なIDの部分をゼロ埋め
+        residual_emb = jnp.where(valid_mask[..., None], residual_emb, 0.0)
+
+        # 3. Add (統合)
+        return static_proj + residual_emb
+
 class CardTransformerNet(hk.Module):
     def __init__(self, num_actions, embedding_matrix, hidden_size=64, num_blocks=2, num_heads=4):
         super().__init__()
@@ -188,7 +223,7 @@ class CardTransformerNet(hk.Module):
         
         # 2. 埋め込み (Board)
         board_card_ids = board_part[:, :, 11].astype(jnp.int32)
-        board_card_emb = PrecomputedEmbedding(self.embedding_matrix, self.hidden_size, name="emb_board")(board_card_ids)
+        board_card_emb = HybridEmbedding(self.embedding_matrix, self.hidden_size, name="emb_board")(board_card_ids)
         
         # 盤面の動的特徴量 (HP, Energy, Statusなど) の抽出
         indices = [i for i in range(32) if i != 11]
@@ -198,9 +233,9 @@ class CardTransformerNet(hk.Module):
         
         # 3. 埋め込み (Hand, Discard)
         # これらは動的特徴量がないので、単に埋め込みだけ
-        hand_emb = PrecomputedEmbedding(self.embedding_matrix, self.hidden_size, name="emb_hand")(hand_ids)
-        discard_emb = PrecomputedEmbedding(self.embedding_matrix, self.hidden_size, name="emb_discard")(discard_ids)
-        opp_discard_emb = PrecomputedEmbedding(self.embedding_matrix, self.hidden_size, name="emb_opp_discard")(opp_discard_ids)
+        hand_emb = HybridEmbedding(self.embedding_matrix, self.hidden_size, name="emb_hand")(hand_ids)
+        discard_emb = HybridEmbedding(self.embedding_matrix, self.hidden_size, name="emb_discard")(discard_ids)
+        opp_discard_emb = HybridEmbedding(self.embedding_matrix, self.hidden_size, name="emb_opp_discard")(opp_discard_ids)
         
         # 4. Slot Positioning (場所と意味の結合)
         # 各エリアごとの位置埋め込み
