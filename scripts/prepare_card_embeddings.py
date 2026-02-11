@@ -76,18 +76,32 @@ def prepare_card_embeddings(output_path):
             # --- New Logic Features (Pokemon) ---
             # Attack 1
             if len(attacks) >= 1:
-                atk1_vec = logic_encoder.encode(attacks[0].mechanic_info)
+                atk_info = card.attack_mechanic_info
+                atk1_vec = logic_encoder.encode(atk_info[0])
                 embeddings[i, base_dim : base_dim + attack_dim] = atk1_vec
+                
+                # Warning if text exists but vec is zero
+                if attacks[0].effect and np.all(atk1_vec == 0):
+                    print(f"WARNING: Card '{card.id}' '{card.name}' Attack 1 unvectorized: {attacks[0].effect}")
             
             # Attack 2
             if len(attacks) >= 2:
-                atk2_vec = logic_encoder.encode(attacks[1].mechanic_info)
+                atk_info = card.attack_mechanic_info
+                atk2_vec = logic_encoder.encode(atk_info[1])
                 embeddings[i, base_dim + attack_dim : base_dim + 2 * attack_dim] = atk2_vec
+                
+                # Warning if text exists but vec is zero
+                if attacks[1].effect and np.all(atk2_vec == 0):
+                    print(f"WARNING: Card '{card.id}' '{card.name}' Attack 2 unvectorized: {attacks[1].effect}")
 
             # Ability
             if card.ability:
                 ability_vec = ability_encoder.encode(card.ability_mechanic_info)
                 embeddings[i, base_dim + 2 * attack_dim + trainer_dim : base_dim + 2 * attack_dim + trainer_dim + ability_dim] = ability_vec
+                
+                # Warning if text exists but vec is zero
+                if card.ability.effect and np.all(ability_vec == 0):
+                    print(f"WARNING: Card '{card.id}' '{card.name}' Ability unvectorized: {card.ability.effect}")
 
         elif card.is_trainer:
             # Numerical flag for trainers
@@ -96,6 +110,10 @@ def prepare_card_embeddings(output_path):
             # --- New Logic Features (Trainer) ---
             t_vec = trainer_encoder.encode(card.trainer_mechanic_info)
             embeddings[i, base_dim + 2 * attack_dim : base_dim + 2 * attack_dim + trainer_dim] = t_vec
+            
+            # Warning if text exists but vec is zero
+            if np.all(t_vec == 0):
+                print(f"WARNING: Trainer '{card.id}' '{card.name}' unvectorized.")
 
     np.save(output_path, embeddings)
     print(f"Saved {num_cards} card embeddings with dimension {feature_dim} to {output_path}")
