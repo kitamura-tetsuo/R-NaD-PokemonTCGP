@@ -51,4 +51,6 @@ else
     echo "deckgym-core directory is empty or missing. Skipping installation."
 fi
 
+uv run python scripts/prepare_card_embeddings.py
+
 echo "Setup complete. Activate environment with: source .venv/bin/activate"

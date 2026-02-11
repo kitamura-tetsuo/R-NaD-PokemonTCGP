@@ -208,32 +208,34 @@ class CardTransformerNet(hk.Module):
         
         # 1. 情報の抽出
         # 前半 39 dims: ターン情報など
-        # その後 8 slots * 32 dims = 256 dims: 盤面カード情報 (カードIDは index 11)
+        # その後 8 slots * 24 dims = 192 dims: 盤面カード情報 (カードIDは index 11)
         # その後 10 slots: 手札 (カードID)
         # その後 2 dims: デッキ残り枚数
         # その後 10 slots: 自分トラッシュ (カードID)
         # その後 10 slots: 相手トラッシュ (カードID)
         
         turn_info = x[:, :39]
-        board_part = x[:, 39:39+256].reshape(batch_size, 8, 32)
-        hand_ids = x[:, 295:305].astype(jnp.int32)
-        deck_counts = x[:, 305:307]
-        discard_ids = x[:, 307:317].astype(jnp.int32)
-        opp_discard_ids = x[:, 317:327].astype(jnp.int32)
+        board_part = x[:, 39:39+192].reshape(batch_size, 8, 24)
+        hand_ids = x[:, 231:241].astype(jnp.int32)
+        deck_ids = x[:, 241:261].astype(jnp.int32)
+        opp_deck_count = x[:, 261:262]
+        discard_ids = x[:, 262:272].astype(jnp.int32)
+        opp_discard_ids = x[:, 272:282].astype(jnp.int32)
         
         # 2. 埋め込み (Board)
         board_card_ids = board_part[:, :, 11].astype(jnp.int32)
         board_card_emb = HybridEmbedding(self.embedding_matrix, self.hidden_size, name="emb_board")(board_card_ids)
         
         # 盤面の動的特徴量 (HP, Energy, Statusなど) の抽出
-        indices = [i for i in range(32) if i != 11]
+        indices = [i for i in range(24) if i != 11]
         board_features = board_part[:, :, indices]
         board_features = hk.Linear(self.hidden_size, name="lin_board_feat")(board_features)
         board_slot_repr = board_card_emb + board_features
         
-        # 3. 埋め込み (Hand, Discard)
+        # 3. 埋め込み (Hand, Deck, Discard)
         # これらは動的特徴量がないので、単に埋め込みだけ
         hand_emb = HybridEmbedding(self.embedding_matrix, self.hidden_size, name="emb_hand")(hand_ids)
+        deck_emb = HybridEmbedding(self.embedding_matrix, self.hidden_size, name="emb_deck")(deck_ids)
         discard_emb = HybridEmbedding(self.embedding_matrix, self.hidden_size, name="emb_discard")(discard_ids)
         opp_discard_emb = HybridEmbedding(self.embedding_matrix, self.hidden_size, name="emb_opp_discard")(opp_discard_ids)
         
@@ -244,6 +246,7 @@ class CardTransformerNet(hk.Module):
             
         board_pos = get_pos_emb("pos_board", 8)
         hand_pos = get_pos_emb("pos_hand", 10)
+        deck_pos = get_pos_emb("pos_deck", 20)
         discard_pos = get_pos_emb("pos_discard", 10)
         opp_discard_pos = get_pos_emb("pos_opp_discard", 10)
         
@@ -251,10 +254,11 @@ class CardTransformerNet(hk.Module):
         tokens = [
             board_slot_repr + board_pos,
             hand_emb + hand_pos,
+            deck_emb + deck_pos,
             discard_emb + discard_pos,
             opp_discard_emb + opp_discard_pos
         ]
-        x_seq = jnp.concatenate(tokens, axis=1) # (Batch, 38, hidden_size)
+        x_seq = jnp.concatenate(tokens, axis=1) # (Batch, 58, hidden_size)
         
         # 5. Transformer Blocks
         for i in range(self.num_blocks):
@@ -269,8 +273,9 @@ class CardTransformerNet(hk.Module):
         # 全トークンの平均
         global_summary = jnp.mean(x_seq, axis=1)
         
-        # ターン情報とデッキ情報を圧縮
-        context_repr = jnp.concatenate([turn_info, deck_counts], axis=-1)
+        # ターン情報とデッキ情報 (自分はID列から計算, 相手は数値) を圧縮
+        self_deck_count = jnp.sum(deck_ids >= 0, axis=1, keepdims=True).astype(jnp.float32)
+        context_repr = jnp.concatenate([turn_info, self_deck_count, opp_deck_count], axis=-1)
         context_repr = hk.Linear(self.hidden_size, name="lin_context")(context_repr)
         context_repr = jax.nn.relu(context_repr)
         
