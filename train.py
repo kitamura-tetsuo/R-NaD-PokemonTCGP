@@ -30,9 +30,9 @@ def main():
     parser.add_argument("--profile_num_steps", type=int, default=10, help="Number of steps to profile")
     
     # League expansion arguments
-    parser.add_argument("--league_decks", type=str, nargs="+", default=None, help="List of deck files for the league")
-    parser.add_argument("--league_rates", type=float, nargs="+", default=None, help="Relative participation rates for the league decks")
     parser.add_argument("--fixed_decks", type=str, nargs="+", default=None, help="List of decks that always participate in matches")
+    parser.add_argument("--league_decks_student", type=str, default=None, help="CSV file for student league decks")
+    parser.add_argument("--league_decks_teacher", type=str, default=None, help="CSV file for teacher league decks")
 
     parser.add_argument("--past_self_play", action="store_true", help="Enable past self-play (training against past checkpoints)")
     parser.add_argument("--test_interval", type=int, default=10, help="Interval for evaluating against baseline (step 0)")
@@ -52,18 +52,11 @@ def main():
     args = parser.parse_args()
 
     league_config = None
-    if args.league_decks:
-        rates = args.league_rates
-        if rates is None:
-            rates = [1.0] * len(args.league_decks)
-        elif len(rates) != len(args.league_decks):
-            raise ValueError("league_rates must have moving length as league_decks")
-        
-        league_config = LeagueConfig(
-            decks=args.league_decks,
-            rates=rates,
-            fixed_decks=args.fixed_decks or []
-        )
+    if args.league_decks_student or args.league_decks_teacher:
+        league_config = LeagueConfig.from_csv(args.league_decks_student, args.league_decks_teacher)
+        if league_config and args.fixed_decks:
+            # Update fixed decks if provided via CLI as well
+            league_config = league_config._replace(fixed_decks=args.fixed_decks)
 
     config = RNaDConfig(
         batch_size=args.batch_size,

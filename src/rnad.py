@@ -56,9 +56,70 @@ class LeagueConfig(NamedTuple):
     decks: List[str] = ["deckgym-core/example_decks/mewtwoex.txt"]
     rates: List[float] = [1.0]
     fixed_decks: List[str] = [] # Decks that always participate in matches
+    
+    # New fields for student/teacher league
+    student_decks: Optional[List[str]] = None
+    student_rates: Optional[List[float]] = None
+    teacher_decks: Optional[List[str]] = None
+    teacher_rates: Optional[List[float]] = None
+
+    @staticmethod
+    def from_csv(student_csv: Optional[str], teacher_csv: Optional[str]) -> 'LeagueConfig':
+        """Loads league configuration from CSV files."""
+        def load_one(csv_path):
+            if not csv_path or not os.path.exists(csv_path):
+                return None, None
+            
+            decks = []
+            rates = []
+            csv_dir = os.path.dirname(csv_path)
+            
+            import csv
+            with open(csv_path, 'r', encoding='utf-8') as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    # Expecting headers: signature, lower_ci (others ignored)
+                    sig = row.get('signature')
+                    weight = row.get('lower_ci')
+                    if not sig or not weight:
+                        continue
+                    
+                    # Deck file is expected in the same directory as CSV
+                    deck_path = os.path.join(csv_dir, f"{sig}.txt")
+                    if os.path.exists(deck_path):
+                        decks.append(deck_path)
+                        rates.append(float(weight))
+                    else:
+                        logging.warning(f"Deck file {deck_path} not found, skipping.")
+            
+            return decks, rates
+
+        s_decks, s_rates = load_one(student_csv)
+        t_decks, t_rates = load_one(teacher_csv)
+        
+        # If student/teacher leagues are provided, they override the default decks/rates
+        return LeagueConfig(
+            decks=s_decks or ["deckgym-core/example_decks/mewtwoex.txt"],
+            rates=s_rates or [1.0],
+            student_decks=s_decks,
+            student_rates=s_rates,
+            teacher_decks=t_decks,
+            teacher_rates=t_rates
+        )
 
     def sample_decks(self, batch_size: int) -> Tuple[List[str], List[str]]:
         """Samples deck pairs for a batch."""
+        
+        # Student vs Teacher case
+        if self.student_decks and self.teacher_decks:
+            p_s = np.array(self.student_rates) / sum(self.student_rates)
+            p_t = np.array(self.teacher_rates) / sum(self.teacher_rates)
+            
+            decks_1 = np.random.choice(self.student_decks, size=batch_size, p=p_s).tolist()
+            decks_2 = np.random.choice(self.teacher_decks, size=batch_size, p=p_t).tolist()
+            return decks_1, decks_2
+
+        # Standard league case
         p = np.array(self.rates) / sum(self.rates)
         
         # If no fixed decks, sample both players from league
@@ -66,13 +127,6 @@ class LeagueConfig(NamedTuple):
             decks_1 = np.random.choice(self.decks, size=batch_size, p=p).tolist()
             decks_2 = np.random.choice(self.decks, size=batch_size, p=p).tolist()
             return decks_1, decks_2
-        
-        # If we have fixed decks, we ensure one player always uses a fixed deck.
-        # For simplicity, let's say we alternate or sample which player gets the fixed deck,
-        # or just fix player 2 to be one of the fixed decks.
-        # The user said "常に試合に参加する固定デッキの指定も可能にして下さい。固定デッキは指定しない場合もあります。"
-        # "Fixed decks" means these decks are always present in the match.
-        # If multiple fixed decks are specified, we sample from them.
         
         # Sample opponent decks from league
         league_decks = np.random.choice(self.decks, size=batch_size, p=p).tolist()
@@ -412,6 +466,8 @@ class RNaDLearner:
         # Check for past self-play
         use_past_self_play = False
         past_params = None
+        is_asymmetric = self.config.league_config and self.config.league_config.student_decks and self.config.league_config.teacher_decks
+
         if self.config.past_self_play:
             checkpoint_dir = getattr(self.config, 'checkpoint_dir', 'checkpoints')
             if os.path.exists(checkpoint_dir):
@@ -490,7 +546,13 @@ class RNaDLearner:
             # 1.4 Agent IDs
             agent_ids = np.zeros(batch_size, dtype=int)
             if use_past_self_play:
-                agent_ids = np.random.randint(0, 2, size=batch_size)
+                if is_asymmetric:
+                    # In student vs teacher mode with past self-play,
+                    # Student is always P1 (Current) and Teacher is P2 (Past).
+                    # So current agent is always 0 (Player 1).
+                    agent_ids = np.zeros(batch_size, dtype=int)
+                else:
+                    agent_ids = np.random.randint(0, 2, size=batch_size)
             buffer_agent_ids.append(agent_ids)
 
             # 1.5 Prime Inference
