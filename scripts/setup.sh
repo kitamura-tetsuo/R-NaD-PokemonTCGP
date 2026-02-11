@@ -31,11 +31,12 @@ uv pip install -r requirements_temp.txt
 # Try to install deckgym-core if it exists and is not empty
 if [ -d "deckgym-core" ] && [ "$(ls -A deckgym-core)" ]; then
     echo "Installing deckgym-core..."
-    (cd deckgym-core && maturin develop --release)
+    (cd deckgym-core && maturin develop)
+    # (cd deckgym-core && maturin develop --release)
     
     # Copy the built shared object to the root for local usage
     # Maturin develop installs it to the venv, but the project seems to expect it in root
-    FIND_SO=$(find deckgym-core/target/release -maxdepth 1 -name "libdeckgym.so" -o -name "deckgym.so" | head -n 1)
+    FIND_SO=$(find deckgym-core/target/debug -maxdepth 1 -name "libdeckgym.so" -o -name "deckgym.so" | head -n 1)
     if [ -f "$FIND_SO" ]; then
         echo "Updating deckgym.so in root..."
         cp "$FIND_SO" deckgym.so
