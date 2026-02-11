@@ -450,6 +450,9 @@ def main():
         # SavedModel Path
         logging.info(f"Loading SavedModel from: {args.checkpoint}")
         import tensorflow as tf
+        if args.device == 'cpu':
+            tf.config.set_visible_devices([], 'GPU')
+            logging.info("Forced use of CPU for TensorFlow SavedModel.")
         loaded_model = tf.saved_model.load(args.checkpoint)
 
         def tf_predict(obs):
