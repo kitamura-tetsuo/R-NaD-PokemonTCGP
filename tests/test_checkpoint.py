@@ -27,7 +27,7 @@ class TestCheckpoint(unittest.TestCase):
         mock_game.observation_tensor_shape.return_value = (20,)
         mock_pyspiel.load_game.return_value = mock_game
 
-        config = RNaDConfig(batch_size=2, max_steps=10, hidden_size=32, num_blocks=1)
+        config = RNaDConfig(batch_size=2, max_steps=10, hidden_size=32, num_blocks=1, model_type="mlp")
         learner = RNaDLearner("deckgym_ptcgp", config)
 
         # Init
