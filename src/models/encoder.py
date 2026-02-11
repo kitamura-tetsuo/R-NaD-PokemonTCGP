@@ -168,3 +168,54 @@ class TrainerVectorEncoder:
                 vec[offset_params + 5] = 1.0
                 
         return vec
+
+class AbilityVectorEncoder:
+    def __init__(self):
+        self.mechanic_types = [
+            "HealAllYourPokemon", "DamageOneOpponentPokemon", "SwitchActiveTypedWithBench",
+            "ReduceDamageFromAttacks", "StartTurnRandomPokemonToHand", "PreventFirstAttack",
+            "ElectromagneticWall"
+        ]
+        self.energy_types = [
+            "Grass", "Fire", "Water", "Lightning", "Psychic",
+            "Fighting", "Darkness", "Metal", "Dragon", "Colorless"
+        ]
+        self.type_to_idx = {name: i for i, name in enumerate(self.mechanic_types)}
+        self.energy_to_idx = {name: i for i, name in enumerate(self.energy_types)}
+        
+        # [One-hot Type] + [amount] + [One-hot EnergyType]
+        self.vector_size = len(self.mechanic_types) + 1 + len(self.energy_types)
+
+    def encode(self, ability_info: dict) -> np.ndarray:
+        vec = np.zeros(self.vector_size, dtype=np.float32)
+        if not ability_info:
+            return vec
+
+        if isinstance(ability_info, str):
+            m_type = ability_info
+            params = {}
+        elif isinstance(ability_info, dict):
+            m_type = list(ability_info.keys())[0] if ability_info else ""
+            params = ability_info[m_type] if m_type else {}
+        else:
+            return vec
+
+        if m_type in self.type_to_idx:
+            idx = self.type_to_idx[m_type]
+            vec[idx] = 1.0
+        
+        offset_amount = len(self.mechanic_types)
+        offset_energy = offset_amount + 1
+
+        if isinstance(params, dict):
+            # amount (slot 0)
+            if "amount" in params:
+                vec[offset_amount] = float(params["amount"]) / 100.0
+            
+            # energy_type (one-hot)
+            energy = params.get("energy_type")
+            if energy in self.energy_to_idx:
+                vec[offset_energy + self.energy_to_idx[energy]] = 1.0
+
+        return vec
+

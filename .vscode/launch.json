@@ -32,6 +32,12 @@
                 "PYTHONPATH": "${env:PYTHONPATH}:${workspaceFolder}:${workspaceFolder}/deckgym-core/python"
             },
             "python": "${workspaceFolder}/.venv/bin/python"
+        },
+        {
+            "name": "Rust: Attach to Python",
+            "type": "lldb",
+            "request": "attach",
+            "pid": "${command:pickProcess}"
         }
     ]
 }

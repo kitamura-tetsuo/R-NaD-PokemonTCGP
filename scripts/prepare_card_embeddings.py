@@ -13,7 +13,7 @@ except ImportError as e:
     print(f"Error: Could not import deckgym. Make sure deckgym.so is in the current directory. {e}")
     sys.exit(1)
 
-from src.models.encoder import LogicVectorEncoder, TrainerVectorEncoder
+from src.models.encoder import LogicVectorEncoder, TrainerVectorEncoder, AbilityVectorEncoder
 
 def prepare_card_embeddings(output_path):
     # Using deckgym.get_all_cards() instead of reading JSON manually
@@ -23,6 +23,7 @@ def prepare_card_embeddings(output_path):
 
     logic_encoder = LogicVectorEncoder()
     trainer_encoder = TrainerVectorEncoder()
+    ability_encoder = AbilityVectorEncoder()
     
     # Base Numerical: HP (1), Stage (1), Retreat Cost (1), NumAttacks (1), MaxDamage (1) = 5
     # Categorical (One-Hot): Type (10), Weakness (11 - includes None) = 21
@@ -30,7 +31,8 @@ def prepare_card_embeddings(output_path):
     base_dim = 26
     attack_dim = logic_encoder.vector_size
     trainer_dim = trainer_encoder.vector_size
-    feature_dim = base_dim + (2 * attack_dim) + trainer_dim
+    ability_dim = ability_encoder.vector_size
+    feature_dim = base_dim + (2 * attack_dim) + trainer_dim + ability_dim
     
     embeddings = np.zeros((num_cards, feature_dim), dtype=np.float32)
 
@@ -81,6 +83,11 @@ def prepare_card_embeddings(output_path):
             if len(attacks) >= 2:
                 atk2_vec = logic_encoder.encode(attacks[1].mechanic_info)
                 embeddings[i, base_dim + attack_dim : base_dim + 2 * attack_dim] = atk2_vec
+
+            # Ability
+            if card.ability:
+                ability_vec = ability_encoder.encode(card.ability_mechanic_info)
+                embeddings[i, base_dim + 2 * attack_dim + trainer_dim : base_dim + 2 * attack_dim + trainer_dim + ability_dim] = ability_vec
 
         elif card.is_trainer:
             # Numerical flag for trainers
