@@ -11,7 +11,7 @@ import os
 import re
 import deckgym
 from typing import NamedTuple, Tuple, List, Dict, Any, Optional
-from src.models import DeckGymNet, TransformerNet
+from src.models import DeckGymNet, TransformerNet, CardTransformerNet
 from functools import partial
 
 # Configure logging
@@ -320,14 +320,23 @@ class RNaDLearner:
         self.num_actions = self.game.num_distinct_actions()
         self.obs_shape = self.game.observation_tensor_shape()
 
+        # Load embedding matrix
+        emb_path = "card_embeddings.npy"
+        if os.path.exists(emb_path):
+            self.embedding_matrix = jnp.array(np.load(emb_path))
+            logging.info(f"Loaded embedding matrix from {emb_path}, shape: {self.embedding_matrix.shape}")
+        else:
+            logging.warning(f"Embedding matrix not found at {emb_path}. Using zero matrix.")
+            self.embedding_matrix = jnp.zeros((10000, 26))
+
         def forward(x):
             if config.model_type == "transformer":
-                net = TransformerNet(
+                net = CardTransformerNet(
                     num_actions=self.num_actions,
+                    embedding_matrix=self.embedding_matrix,
                     hidden_size=config.transformer_embed_dim,
                     num_blocks=config.transformer_layers,
                     num_heads=config.transformer_heads,
-                    seq_len=config.transformer_seq_len
                 )
             else:
                 net = DeckGymNet(

@@ -41,8 +41,8 @@ class DeckGymNet(hk.Module):
 
 
 class TransformerBlock(hk.Module):
-    def __init__(self, num_heads, key_size, hidden_size, dropout_rate=0.1):
-        super().__init__()
+    def __init__(self, num_heads, key_size, hidden_size, dropout_rate=0.1, name=None):
+        super().__init__(name=name)
         self.num_heads = num_heads
         self.key_size = key_size
         self.hidden_size = hidden_size
@@ -120,5 +120,131 @@ class TransformerNet(hk.Module):
         
         # Value
         value = hk.Linear(1)(x)
+        
+        return policy_logits, value
+
+class PrecomputedEmbedding(hk.Module):
+    """事前計算済み特徴量テーブルからベクトルをLookupするモジュール"""
+    def __init__(self, embedding_matrix, output_dim, name=None):
+        super().__init__(name=name)
+        self.embedding_matrix = embedding_matrix # shape: (TotalCards, FeatureDim)
+        self.output_dim = output_dim
+
+    def __call__(self, card_ids):
+        # card_ids: (Batch, NumSlots) の整数配列
+        
+        # 1. テーブルを定数パラメータとして定義 (学習しない)
+        table = hk.get_parameter(
+            "feature_table",
+            shape=self.embedding_matrix.shape,
+            init=hk.initializers.Constant(self.embedding_matrix)
+        )
+        table = jax.lax.stop_gradient(table) # 固定する
+        
+        # 2. IDに対応するベクトルを引く (Lookup)
+        # 負のID (-1.0) は null として扱う (index 0 が null と想定するか、あるいは clip する)
+        # ここでは clip(0, num_cards-1) してから、有効なIDかどうかでマスクするのが安全
+        num_cards = self.embedding_matrix.shape[0]
+        valid_mask = (card_ids >= 0) & (card_ids < num_cards)
+        safe_ids = jnp.where(valid_mask, card_ids, 0)
+        
+        # x shape: (Batch, NumSlots, FeatureDim)
+        x = jnp.take(table, safe_ids, axis=0)
+        
+        # 無効なIDの部分をゼロ埋め
+        x = jnp.where(valid_mask[..., None], x, 0.0)
+        
+        # 3. Transformerの次元(hidden_size)に合わせて圧縮/変換
+        x = hk.Linear(self.output_dim)(x)
+        return x
+
+class CardTransformerNet(hk.Module):
+    def __init__(self, num_actions, embedding_matrix, hidden_size=64, num_blocks=2, num_heads=4):
+        super().__init__()
+        self.num_actions = num_actions
+        self.embedding_matrix = embedding_matrix
+        self.hidden_size = hidden_size
+        self.num_blocks = num_blocks
+        self.num_heads = num_heads
+
+    def __call__(self, x, is_training=False):
+        # x: (Batch, ObsDim)
+        batch_size = x.shape[0]
+        
+        # 1. 情報の抽出
+        # 前半 39 dims: ターン情報など
+        # その後 8 slots * 32 dims = 256 dims: 盤面カード情報 (カードIDは index 11)
+        # その後 10 slots: 手札 (カードID)
+        # その後 2 dims: デッキ残り枚数
+        # その後 10 slots: 自分トラッシュ (カードID)
+        # その後 10 slots: 相手トラッシュ (カードID)
+        
+        turn_info = x[:, :39]
+        board_part = x[:, 39:39+256].reshape(batch_size, 8, 32)
+        hand_ids = x[:, 295:305].astype(jnp.int32)
+        deck_counts = x[:, 305:307]
+        discard_ids = x[:, 307:317].astype(jnp.int32)
+        opp_discard_ids = x[:, 317:327].astype(jnp.int32)
+        
+        # 2. 埋め込み (Board)
+        board_card_ids = board_part[:, :, 11].astype(jnp.int32)
+        board_card_emb = PrecomputedEmbedding(self.embedding_matrix, self.hidden_size, name="emb_board")(board_card_ids)
+        
+        # 盤面の動的特徴量 (HP, Energy, Statusなど) の抽出
+        indices = [i for i in range(32) if i != 11]
+        board_features = board_part[:, :, indices]
+        board_features = hk.Linear(self.hidden_size, name="lin_board_feat")(board_features)
+        board_slot_repr = board_card_emb + board_features
+        
+        # 3. 埋め込み (Hand, Discard)
+        # これらは動的特徴量がないので、単に埋め込みだけ
+        hand_emb = PrecomputedEmbedding(self.embedding_matrix, self.hidden_size, name="emb_hand")(hand_ids)
+        discard_emb = PrecomputedEmbedding(self.embedding_matrix, self.hidden_size, name="emb_discard")(discard_ids)
+        opp_discard_emb = PrecomputedEmbedding(self.embedding_matrix, self.hidden_size, name="emb_opp_discard")(opp_discard_ids)
+        
+        # 4. Slot Positioning (場所と意味の結合)
+        # 各エリアごとの位置埋め込み
+        def get_pos_emb(name, num_slots):
+            return hk.get_parameter(name, [1, num_slots, self.hidden_size], init=hk.initializers.TruncatedNormal())
+            
+        board_pos = get_pos_emb("pos_board", 8)
+        hand_pos = get_pos_emb("pos_hand", 10)
+        discard_pos = get_pos_emb("pos_discard", 10)
+        opp_discard_pos = get_pos_emb("pos_opp_discard", 10)
+        
+        # トークン列の構築
+        tokens = [
+            board_slot_repr + board_pos,
+            hand_emb + hand_pos,
+            discard_emb + discard_pos,
+            opp_discard_emb + opp_discard_pos
+        ]
+        x_seq = jnp.concatenate(tokens, axis=1) # (Batch, 38, hidden_size)
+        
+        # 5. Transformer Blocks
+        for i in range(self.num_blocks):
+            x_seq = TransformerBlock(
+                num_heads=self.num_heads,
+                key_size=self.hidden_size // self.num_heads,
+                hidden_size=self.hidden_size,
+                name=f"block_{i}"
+            )(x_seq, is_training)
+            
+        # 6. Global Features 統合
+        # 全トークンの平均
+        global_summary = jnp.mean(x_seq, axis=1)
+        
+        # ターン情報とデッキ情報を圧縮
+        context_repr = jnp.concatenate([turn_info, deck_counts], axis=-1)
+        context_repr = hk.Linear(self.hidden_size, name="lin_context")(context_repr)
+        context_repr = jax.nn.relu(context_repr)
+        
+        final_repr = jnp.concatenate([global_summary, context_repr], axis=-1)
+        final_repr = hk.Linear(self.hidden_size, name="lin_final")(final_repr)
+        final_repr = jax.nn.relu(final_repr)
+        
+        # 7. Heads
+        policy_logits = hk.Linear(self.num_actions, name="lin_policy")(final_repr)
+        value = hk.Linear(1, name="lin_value")(final_repr)
         
         return policy_logits, value

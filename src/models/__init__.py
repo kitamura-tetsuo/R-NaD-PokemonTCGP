@@ -1,1 +1,1 @@
-from .haiku_model import DeckGymNet, ResidualBlock, TransformerNet, TransformerBlock
+from .haiku_model import DeckGymNet, ResidualBlock, TransformerNet, TransformerBlock, CardTransformerNet, PrecomputedEmbedding

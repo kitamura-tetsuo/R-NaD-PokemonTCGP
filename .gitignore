@@ -1,5 +1,7 @@
 __pycache__/
 *.pyc
+
+
 .DS_Store
 mlflow.db
 mlruns/*
@@ -9,3 +11,5 @@ deckgym_openspiel/
 runs/**
 checkpoints_sample/
 battle.html
+
+.env
