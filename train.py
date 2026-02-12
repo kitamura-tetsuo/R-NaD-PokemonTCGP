@@ -2,11 +2,22 @@ import argparse
 import sys
 import logging
 import deckgym_openspiel
-from src.rnad import train_loop, RNaDConfig, LeagueConfig
+import os
+import pickle
+from src.rnad import train_loop, RNaDConfig, LeagueConfig, find_latest_checkpoint
 from src.training.experiment import ExperimentManager
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+def get_run_id_from_checkpoint(path):
+    try:
+        with open(path, 'rb') as f:
+            data = pickle.load(f)
+        return data.get('metadata', {}).get('mlflow_run_id')
+    except Exception as e:
+        logging.warning(f"Failed to extract run_id from checkpoint {path}: {e}")
+        return None
 
 def main():
     parser = argparse.ArgumentParser(description="Train R-NaD agent on deckgym_ptcgp")
@@ -94,8 +105,19 @@ def main():
 
 
 
+    # Determine checkpoint to resume from (to get run_id)
+    resume_checkpoint = args.resume_checkpoint
+    if not resume_checkpoint:
+        resume_checkpoint = find_latest_checkpoint(args.checkpoint_dir)
+
+    run_id = None
+    if resume_checkpoint:
+        run_id = get_run_id_from_checkpoint(resume_checkpoint)
+        if run_id:
+            logging.info(f"Resuming MLflow run: {run_id}")
+
     # Initialize ExperimentManager
-    experiment_manager = ExperimentManager(experiment_name="RNaD_Experiment", checkpoint_dir=args.checkpoint_dir)
+    experiment_manager = ExperimentManager(experiment_name="RNaD_Experiment", checkpoint_dir=args.checkpoint_dir, run_id=run_id)
 
     logging.info(f"Starting training with config: {config}")
 
@@ -104,7 +126,7 @@ def main():
             config,
             experiment_manager=experiment_manager,
             checkpoint_dir=args.checkpoint_dir,
-            resume_checkpoint=args.resume_checkpoint
+            resume_checkpoint=resume_checkpoint
         )
     except Exception as e:
         logging.error(f"Training failed: {e}", exc_info=True)
