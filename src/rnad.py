@@ -9,7 +9,6 @@ import time
 import pickle
 import os
 import re
-import deckgym
 from typing import NamedTuple, Tuple, List, Dict, Any, Optional
 from src.models import DeckGymNet, TransformerNet, CardTransformerNet
 from functools import partial
@@ -51,6 +50,31 @@ try:
                  pass
 except ImportError:
     pass
+
+def find_latest_checkpoint(checkpoint_dir: str) -> Optional[str]:
+    """Finds the latest checkpoint in the given directory."""
+    if not os.path.exists(checkpoint_dir):
+        return None
+
+    checkpoints = [f for f in os.listdir(checkpoint_dir) if f.startswith("checkpoint_") and f.endswith(".pkl")]
+    if not checkpoints:
+        return None
+
+    # Extract step numbers
+    steps = []
+    checkpoint_map = {}
+    for cp in checkpoints:
+        match = re.search(r"checkpoint_(\d+).pkl", cp)
+        if match:
+            step = int(match.group(1))
+            steps.append(step)
+            checkpoint_map[step] = cp
+
+    if not steps:
+        return None
+
+    latest_step = max(steps)
+    return os.path.join(checkpoint_dir, checkpoint_map[latest_step])
 
 class LeagueConfig(NamedTuple):
     decks: List[str] = ["deckgym-core/example_decks/mewtwoex.txt"]
@@ -381,30 +405,32 @@ class RNaDLearner:
             return values
         self._value_fn = _value_fn
 
-    def save_checkpoint(self, path: str, step: int):
+    def save_checkpoint(self, path: str, step: int, metadata: Dict[str, Any] = None):
         data = {
             'params': self.params,
             'fixed_params': self.fixed_params,
             'opt_state': self.opt_state,
             'step': step,
-            'config': self.config
+            'config': self.config,
+            'metadata': metadata or {}
         }
         with open(path, 'wb') as f:
             pickle.dump(data, f)
         logging.info(f"Checkpoint saved to {path} at step {step}")
 
-    def load_checkpoint(self, path: str) -> int:
+    def load_checkpoint(self, path: str) -> Tuple[int, Dict[str, Any]]:
         with open(path, 'rb') as f:
             data = pickle.load(f)
         self.params = data['params']
         self.fixed_params = data['fixed_params']
         self.opt_state = data['opt_state']
         step = data['step']
+        metadata = data.get('metadata', {})
         # We generally trust the loaded config to match roughly or ignore it,
         # or we could assert config compatibility.
         # For now, we assume the user knows what they are doing.
         logging.info(f"Checkpoint loaded from {path}, resuming from step {step}")
-        return step
+        return step, metadata
 
     def init(self, key):
         dummy_obs = jnp.zeros((1, *self.obs_shape))
@@ -917,28 +943,18 @@ def train_loop(config: RNaDConfig, experiment_manager: Optional[Any] = None, che
 
     if resume_checkpoint:
         if os.path.exists(resume_checkpoint):
-            start_step = learner.load_checkpoint(resume_checkpoint)
+            start_step, _ = learner.load_checkpoint(resume_checkpoint)
             start_step += 1 # Resume from next step
         else:
             logging.error(f"Checkpoint {resume_checkpoint} not found!")
             return
     else:
         # Check for latest checkpoint in directory
-        checkpoints = [f for f in os.listdir(checkpoint_dir) if f.startswith("checkpoint_") and f.endswith(".pkl")]
-        if checkpoints:
-            # Extract step numbers
-            steps = []
-            for cp in checkpoints:
-                match = re.search(r"checkpoint_(\d+).pkl", cp)
-                if match:
-                    steps.append(int(match.group(1)))
-
-            if steps:
-                latest_step = max(steps)
-                latest_checkpoint = os.path.join(checkpoint_dir, f"checkpoint_{latest_step}.pkl")
-                start_step = learner.load_checkpoint(latest_checkpoint)
-                start_step += 1
-                logging.info(f"Auto-resuming from latest checkpoint: {latest_checkpoint}")
+        latest_checkpoint = find_latest_checkpoint(checkpoint_dir)
+        if latest_checkpoint:
+            start_step, _ = learner.load_checkpoint(latest_checkpoint)
+            start_step += 1
+            logging.info(f"Auto-resuming from latest checkpoint: {latest_checkpoint}")
 
     if experiment_manager:
         experiment_manager.log_params(config)
@@ -1027,7 +1043,10 @@ def train_loop(config: RNaDConfig, experiment_manager: Optional[Any] = None, che
 
         if step % save_interval == 0:
              ckpt_path = os.path.join(checkpoint_dir, f"checkpoint_{step}.pkl")
-             learner.save_checkpoint(ckpt_path, step)
+             metadata = {}
+             if experiment_manager and hasattr(experiment_manager, 'run_id'):
+                 metadata['mlflow_run_id'] = experiment_manager.run_id
+             learner.save_checkpoint(ckpt_path, step, metadata=metadata)
         
         # Periodic Evaluation against Baseline
         if config.test_interval > 0 and step % config.test_interval == 0:
@@ -1058,7 +1077,10 @@ def train_loop(config: RNaDConfig, experiment_manager: Optional[Any] = None, che
     # Save final checkpoint
     final_step = config.max_steps - 1
     ckpt_path = os.path.join(checkpoint_dir, f"checkpoint_{final_step}.pkl")
-    learner.save_checkpoint(ckpt_path, final_step)
+    metadata = {}
+    if experiment_manager and hasattr(experiment_manager, 'run_id'):
+        metadata['mlflow_run_id'] = experiment_manager.run_id
+    learner.save_checkpoint(ckpt_path, final_step, metadata=metadata)
     logging.info("Training complete.")
 
 if __name__ == "__main__":

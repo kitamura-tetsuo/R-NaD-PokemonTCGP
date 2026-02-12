@@ -5,18 +5,23 @@ from typing import Any, Dict
 import logging
 
 class ExperimentManager:
-    def __init__(self, experiment_name: str, checkpoint_dir: str = "checkpoints"):
+    def __init__(self, experiment_name: str, checkpoint_dir: str = "checkpoints", run_id: str = None):
         mlflow.set_experiment(experiment_name=experiment_name)
 
         # Configure CheckpointManager
         # Start a run explicitly if not already active
-        if not mlflow.active_run():
+        if run_id:
+            if mlflow.active_run() and mlflow.active_run().info.run_id != run_id:
+                mlflow.end_run()
+            if not mlflow.active_run():
+                mlflow.start_run(run_id=run_id)
+        elif not mlflow.active_run():
             mlflow.start_run()
 
-        run_id = mlflow.active_run().info.run_id
+        self.run_id = mlflow.active_run().info.run_id
 
         # We save checkpoints locally first, using run_id to avoid conflicts
-        self.checkpoint_dir = os.path.abspath(os.path.join(checkpoint_dir, run_id))
+        self.checkpoint_dir = os.path.abspath(os.path.join(checkpoint_dir, self.run_id))
         options = orbax.checkpoint.CheckpointManagerOptions(max_to_keep=5, create=True)
         # Use StandardCheckpointer for PyTrees
         self.checkpointer = orbax.checkpoint.StandardCheckpointer()
