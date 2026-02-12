@@ -616,7 +616,6 @@ class RNaDLearner:
                      sim.sample_and_step(final_logits)
                  if i_step % 100 == 0:
                      t4 = time.time()
-                     logging.info(f"Step {i_step} (Buf {b}): Inference+Transfer={t1-t0:.4f}s, Sim(Rust)={t4-t3:.4f}s")
                  
                  # 3. Storage
                  old_obs = sb['current_obs'] # Store reference to old obs for trajectory
@@ -669,6 +668,10 @@ class RNaDLearner:
                  
                  if sb['active_mask'].any():
                      futures[b] = self._inference_fn(self.params, sb['current_obs'], mask=sb['current_mask'])
+
+                 if i_step % 100 == 0:
+                     t5 = time.time()
+                     logging.info(f"Step {i_step} (Buf {b}): Inference+Transfer={t1-t0:.4f}s, Sim(Rust)={t4-t3:.4f}s, Store={t5-t4:.4f}s, Total={t5-t0:.4f}s")
         
         # Merge Results
         # We need to concatenate the batch dimensions of all buffers
