@@ -2,6 +2,7 @@ import json
 import numpy as np
 import os
 import sys
+import glob
 
 # Add current directory to path so we can import deckgym and our encoders
 sys.path.insert(0, os.getcwd())
@@ -15,11 +16,36 @@ except ImportError as e:
 
 from src.models.encoder import LogicVectorEncoder, TrainerVectorEncoder, AbilityVectorEncoder
 
+def get_train_card_ids(train_data_dir):
+    deck_files = glob.glob(os.path.join(train_data_dir, "*.txt"))
+    card_ids = set()
+
+    for filepath in deck_files:
+        with open(filepath, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                if line.startswith("Energy:"):
+                    continue
+
+                parts = line.split()
+                if len(parts) >= 2:
+                    # Assuming last two are Set and Number
+                    # e.g. "A2 150"
+                    card_id = f"{parts[-2]} {parts[-1]}"
+                    card_ids.add(card_id)
+
+    return card_ids
+
 def prepare_card_embeddings(output_path):
     # Using deckgym.get_all_cards() instead of reading JSON manually
     # to ensure consistency with the Rust core.
     all_cards = deckgym.get_all_cards()
     num_cards = len(all_cards)
+
+    # Get train card IDs to filter warnings
+    train_card_ids = get_train_card_ids("train_data")
 
     logic_encoder = LogicVectorEncoder()
     trainer_encoder = TrainerVectorEncoder()
@@ -82,7 +108,8 @@ def prepare_card_embeddings(output_path):
                 
                 # Warning if text exists but vec is zero
                 if attacks[0].effect and np.all(atk1_vec == 0):
-                    print(f"WARNING: Card '{card.id}' '{card.name}' Attack 1 unvectorized: {attacks[0].effect}")
+                    if card.id in train_card_ids:
+                        print(f"WARNING: Card '{card.id}' '{card.name}' Attack 1 unvectorized: {attacks[0].effect}")
             
             # Attack 2
             if len(attacks) >= 2:
@@ -92,7 +119,8 @@ def prepare_card_embeddings(output_path):
                 
                 # Warning if text exists but vec is zero
                 if attacks[1].effect and np.all(atk2_vec == 0):
-                    print(f"WARNING: Card '{card.id}' '{card.name}' Attack 2 unvectorized: {attacks[1].effect}")
+                    if card.id in train_card_ids:
+                        print(f"WARNING: Card '{card.id}' '{card.name}' Attack 2 unvectorized: {attacks[1].effect}")
 
             # Ability
             if card.ability:
@@ -101,7 +129,8 @@ def prepare_card_embeddings(output_path):
                 
                 # Warning if text exists but vec is zero
                 if card.ability.effect and np.all(ability_vec == 0):
-                    print(f"WARNING: Card '{card.id}' '{card.name}' Ability unvectorized: {card.ability.effect}")
+                    if card.id in train_card_ids:
+                        print(f"WARNING: Card '{card.id}' '{card.name}' Ability unvectorized: {card.ability.effect}")
 
         elif card.is_trainer:
             # Numerical flag for trainers
@@ -113,7 +142,8 @@ def prepare_card_embeddings(output_path):
             
             # Warning if text exists but vec is zero
             if np.all(t_vec == 0):
-                print(f"WARNING: Trainer '{card.id}' '{card.name}' unvectorized.")
+                if card.id in train_card_ids:
+                    print(f"WARNING: Trainer '{card.id}' '{card.name}' unvectorized.")
 
     np.save(output_path, embeddings)
     print(f"Saved {num_cards} card embeddings with dimension {feature_dim} to {output_path}")
