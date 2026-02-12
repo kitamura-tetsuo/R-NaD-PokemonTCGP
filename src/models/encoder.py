@@ -40,10 +40,18 @@ class LogicVectorEncoder:
         ]
         self.type_to_idx = {name: i for i, name in enumerate(self.mechanic_types)}
         self.scope_to_idx = {name: i for i, name in enumerate(self.target_scopes)}
-        # [One-hot Type] + [One-hot Scope] + [amount, damage, extra_damage, self_damage, num_coins, duration, probability, count, draw_count]
-        self.vector_size = len(self.mechanic_types) + len(self.target_scopes) + 9
 
-    def encode(self, attack_info: dict) -> np.ndarray:
+        # Energy types for cost encoding
+        self.energy_types = [
+            "Grass", "Fire", "Water", "Lightning", "Psychic",
+            "Fighting", "Darkness", "Metal", "Dragon", "Colorless"
+        ]
+        self.energy_to_idx = {name: i for i, name in enumerate(self.energy_types)}
+
+        # [One-hot Type] + [One-hot Scope] + [params 9 slots] + [Energy Counts (New)]
+        self.vector_size = len(self.mechanic_types) + len(self.target_scopes) + 9 + len(self.energy_types)
+
+    def encode(self, attack_info: dict, cost: list = None) -> np.ndarray:
         vec = np.zeros(self.vector_size, dtype=np.float32)
         if not attack_info:
             return vec
@@ -123,6 +131,14 @@ class LogicVectorEncoder:
             val = params.get("draw_count")
             if val is not None:
                 vec[offset_params + 8] = float(val) / 10.0
+
+        # Energy cost (New)
+        if cost:
+            offset_energy = len(self.mechanic_types) + len(self.target_scopes) + 9
+            for energy in cost:
+                e_str = str(energy)
+                if e_str in self.energy_to_idx:
+                    vec[offset_energy + self.energy_to_idx[e_str]] += 1.0
 
         return vec
 

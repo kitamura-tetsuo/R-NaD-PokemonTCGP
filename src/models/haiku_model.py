@@ -22,7 +22,7 @@ class DeckGymNet(hk.Module):
         self.hidden_size = hidden_size
         self.num_blocks = num_blocks
 
-    def __call__(self, x):
+    def __call__(self, x, mask=None):
         # Flatten input if needed, though usually expected (B, obs_dim)
         if x.ndim > 2:
             x = jnp.reshape(x, (x.shape[0], -1))
@@ -36,6 +36,11 @@ class DeckGymNet(hk.Module):
 
         # Heads
         policy_logits = hk.Linear(self.num_actions)(x)
+        
+        if mask is not None:
+             inf_mask = (1.0 - mask) * -1e9
+             policy_logits = policy_logits + inf_mask
+
         value = hk.Linear(1)(x)
         return policy_logits, value
 
@@ -81,7 +86,7 @@ class TransformerNet(hk.Module):
         self.num_heads = num_heads
         self.seq_len = seq_len
 
-    def __call__(self, x, is_training=False):
+    def __call__(self, x, mask=None, is_training=False):
         # x: (B, ObsDim)
         if x.ndim > 2:
             x = jnp.reshape(x, (x.shape[0], -1))
@@ -118,6 +123,10 @@ class TransformerNet(hk.Module):
         # Policy
         policy_logits = hk.Linear(self.num_actions)(x)
         
+        if mask is not None:
+             inf_mask = (1.0 - mask) * -1e9
+             policy_logits = policy_logits + inf_mask
+
         # Value
         value = hk.Linear(1)(x)
         
@@ -202,7 +211,7 @@ class CardTransformerNet(hk.Module):
         self.num_blocks = num_blocks
         self.num_heads = num_heads
 
-    def __call__(self, x, is_training=False):
+    def __call__(self, x, mask=None, is_training=False):
         # x: (Batch, ObsDim)
         batch_size = x.shape[0]
         
@@ -285,6 +294,11 @@ class CardTransformerNet(hk.Module):
         
         # 7. Heads
         policy_logits = hk.Linear(self.num_actions, name="lin_policy")(final_repr)
+        
+        if mask is not None:
+             inf_mask = (1.0 - mask) * -1e9
+             policy_logits = policy_logits + inf_mask
+
         value = hk.Linear(1, name="lin_value")(final_repr)
         
         return policy_logits, value

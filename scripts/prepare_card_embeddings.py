@@ -103,7 +103,8 @@ def prepare_card_embeddings(output_path):
             # Attack 1
             if len(attacks) >= 1:
                 atk_info = card.attack_mechanic_info
-                atk1_vec = logic_encoder.encode(atk_info[0])
+                cost1 = getattr(attacks[0], 'cost', [])
+                atk1_vec = logic_encoder.encode(atk_info[0], cost=cost1)
                 embeddings[i, base_dim : base_dim + attack_dim] = atk1_vec
                 
                 # Warning if text exists but vec is zero
@@ -114,7 +115,8 @@ def prepare_card_embeddings(output_path):
             # Attack 2
             if len(attacks) >= 2:
                 atk_info = card.attack_mechanic_info
-                atk2_vec = logic_encoder.encode(atk_info[1])
+                cost2 = getattr(attacks[1], 'cost', [])
+                atk2_vec = logic_encoder.encode(atk_info[1], cost=cost2)
                 embeddings[i, base_dim + attack_dim : base_dim + 2 * attack_dim] = atk2_vec
                 
                 # Warning if text exists but vec is zero
