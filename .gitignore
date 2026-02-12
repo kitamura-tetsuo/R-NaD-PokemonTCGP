@@ -13,3 +13,6 @@ checkpoints_sample/
 battle.html
 
 .env
+
+# Saved model
+saved_model/*

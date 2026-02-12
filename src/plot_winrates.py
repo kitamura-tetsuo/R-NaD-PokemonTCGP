@@ -15,7 +15,7 @@ from typing import List, Tuple, Dict, Any
 # Add src to python path if not already there
 sys.path.append(os.getcwd())
 
-from src.models import DeckGymNet
+from src.models import DeckGymNet, TransformerNet, CardTransformerNet
 
 # Try importing deckgym
 try:
@@ -44,7 +44,7 @@ def get_deck_name(deck_path: str) -> str:
     name, _ = os.path.splitext(filename)
     return name
 
-def evaluate_pair(p1_params, p2_params, config, deck1_path: str, deck2_path: str, num_games: int, batch_size: int) -> Dict[str, int]:
+def evaluate_pair(p1_params, p2_params, config, embedding_matrix, deck1_path: str, deck2_path: str, num_games: int, batch_size: int) -> Dict[str, int]:
     """
     Evaluates a pair of decks using the given params for P1 and P2.
     Returns: {'p1_wins': int, 'p2_wins': int, 'ties': int, 'total': int}
@@ -65,12 +65,21 @@ def evaluate_pair(p1_params, p2_params, config, deck1_path: str, deck2_path: str
         num_actions = 38907
 
     def forward(obs):
-        net = DeckGymNet(
-            num_actions=num_actions,
-            hidden_size=hidden_size,
-            num_blocks=num_blocks
-        )
-        return net(obs)
+        model_type = getattr(config, 'model_type', 'mlp')
+        if model_type == "transformer":
+            return CardTransformerNet(
+                num_actions=num_actions,
+                embedding_matrix=embedding_matrix,
+                hidden_size=getattr(config, 'transformer_embed_dim', 64),
+                num_blocks=getattr(config, 'transformer_layers', 2),
+                num_heads=getattr(config, 'transformer_heads', 4),
+            )(obs)
+        else:
+            return DeckGymNet(
+                num_actions=num_actions,
+                hidden_size=hidden_size,
+                num_blocks=num_blocks
+            )(obs)
 
     network = hk.without_apply_rng(hk.transform(forward))
 
@@ -210,6 +219,15 @@ def main():
         print(f"Failed to load control checkpoint: {e}")
         sys.exit(1)
 
+    # Load embedding matrix
+    embedding_matrix = jnp.zeros((10000, 26))
+    emb_path = "card_embeddings.npy"
+    if os.path.exists(emb_path):
+        embedding_matrix = jnp.array(np.load(emb_path))
+        print(f"Loaded embedding matrix from {emb_path}, shape: {embedding_matrix.shape}")
+    else:
+        print(f"Warning: Embedding matrix not found at {emb_path}. Using zero matrix.")
+
     # Load Cache
     cache = {}
     if os.path.exists(args.cache_file):
@@ -257,7 +275,7 @@ def main():
                 else:
                     print(f"  Evaluating {pair_key}...")
                     # P1 = Target (params), P2 = Control (control_params)
-                    res = evaluate_pair(params, control_params, config, d1, d2, args.num_games, args.batch_size)
+                    res = evaluate_pair(params, control_params, config, embedding_matrix, d1, d2, args.num_games, args.batch_size)
                     cache[cache_key] = res
 
                     # Update cache file immediately

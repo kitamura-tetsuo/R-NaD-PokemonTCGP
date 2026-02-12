@@ -7,5 +7,7 @@
 			"path": "../deckgym-core"
 		}
 	],
-	"settings": {}
+	"settings": {
+		"liveServer.settings.multiRootWorkspaceName": "R-NaD-PokemonTCGP"
+	}
 }

@@ -3,6 +3,7 @@ import sys
 import os
 import json
 import random
+import datetime
 import logging
 import jax
 import haiku as hk
@@ -13,7 +14,7 @@ import deckgym_openspiel
 import pickle
 import jax.numpy as jnp
 from src.rnad import RNaDConfig
-from src.models import DeckGymNet, TransformerNet
+from src.models import DeckGymNet, TransformerNet, CardTransformerNet
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -24,7 +25,7 @@ def parse_args():
     parser.add_argument("--deck_id_1", type=str, default="deckgym-core/example_decks/mewtwoex.txt", help="Path to deck 1 file.")
     parser.add_argument("--deck_id_2", type=str, default="deckgym-core/example_decks/mewtwoex.txt", help="Path to deck 2 file.")
     parser.add_argument("--output", type=str, default="battle.html", help="Path to output HTML file.")
-    parser.add_argument("--seed", type=int, default=42, help="Random seed.")
+    parser.add_argument("--seed", type=int, default=int(datetime.datetime.now().timestamp()), help="Random seed.")
     parser.add_argument("--device", type=str, choices=['cpu', 'gpu'], default='gpu', help="Device to run inference on (cpu or gpu).")
     parser.add_argument("--disable_jit", action="store_true", help="Disable JIT compilation to save memory.")
     return parser.parse_args()
@@ -424,6 +425,15 @@ def main():
     np.random.seed(args.seed)
     rng = jax.random.PRNGKey(args.seed)
 
+    # Load embedding matrix
+    emb_path = "card_embeddings.npy"
+    if os.path.exists(emb_path):
+        embedding_matrix = jnp.array(np.load(emb_path))
+        logging.info(f"Loaded embedding matrix from {emb_path}, shape: {embedding_matrix.shape}")
+    else:
+        logging.warning(f"Embedding matrix not found at {emb_path}. Using zero matrix.")
+        embedding_matrix = jnp.zeros((10000, 26))
+
     # Config
     config = RNaDConfig(
         deck_id_1=args.deck_id_1,
@@ -476,12 +486,12 @@ def main():
             # Checkpoints might contain config, but let's assume default or what user passed if we added args for it (we didn't).
             # We will try to load config from checkpoint if available.
             if config.model_type == "transformer":
-                net = TransformerNet(
+                net = CardTransformerNet(
                     num_actions=num_actions,
+                    embedding_matrix=embedding_matrix,
                     hidden_size=config.transformer_embed_dim,
                     num_blocks=config.transformer_layers,
                     num_heads=config.transformer_heads,
-                    seq_len=config.transformer_seq_len
                 )
             else:
                 net = DeckGymNet(
@@ -515,12 +525,12 @@ def main():
 
                     def forward_ckpt(x):
                         if ckpt_config.model_type == "transformer":
-                            net = TransformerNet(
+                            net = CardTransformerNet(
                                 num_actions=num_actions,
+                                embedding_matrix=embedding_matrix,
                                 hidden_size=ckpt_config.transformer_embed_dim,
                                 num_blocks=ckpt_config.transformer_layers,
                                 num_heads=ckpt_config.transformer_heads,
-                                seq_len=ckpt_config.transformer_seq_len
                             )
                         else:
                             net = DeckGymNet(
