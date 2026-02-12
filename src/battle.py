@@ -214,7 +214,7 @@ def generate_html(history, output_path):
 
         function renderPlayer(pIndex, state) {{
             const p = state.players[pIndex];
-            const isCurrent = state.current_player === pIndex;
+            const isCurrent = state.acting_player === pIndex;
 
             let activeHtml = renderCard(p.active, 'active');
 
@@ -556,6 +556,7 @@ def main():
     # Record initial state
     initial_info = extract_state_info(state.rust_game.get_state())
     initial_info["action_name"] = "Game Start"
+    initial_info["acting_player"] = state.current_player()
     
     # Initial evaluations
     # Initial evaluations
@@ -627,6 +628,7 @@ def main():
         # Record State
         info = extract_state_info(state.rust_game.get_state())
         info["action_name"] = action_name
+        info["acting_player"] = current_player
         info["top_candidates"] = top_candidates
         
         # Evaluations
