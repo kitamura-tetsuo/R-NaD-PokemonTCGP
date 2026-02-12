@@ -20,10 +20,8 @@
             "args": [
                 "--batch_size",
                 "1",
-                "--num_buffers",
-                "2",
                 "--accumulation_steps",
-                "64",
+                "128",
                 "--max_steps",
                 "200",
                 "--save_interval",

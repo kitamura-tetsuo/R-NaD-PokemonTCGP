@@ -486,23 +486,22 @@ class RNaDLearner:
         return metrics
 
 
-    # Corrected method implementation
     def generate_trajectories(self, key):
-        num_buffers = self.config.num_buffers
+        # Optimization: eliminate num_buffers loop and switch to streaming processing
+        # ※ config.num_buffers is ignored here and effectively treated as 1
+        # ※ Increase config.accumulation_steps as needed
+        
         batch_size = self.config.batch_size
         max_len = self.config.unroll_length
 
-        simulators = []
-        state_buffers = [] 
-        traj_buffers = []  
-        futures = []
-
+        # === 1. Deck sampling ===
         if self.config.league_config:
-            decks_1, decks_2 = self.config.league_config.sample_decks(batch_size * num_buffers)
+            decks_1, decks_2 = self.config.league_config.sample_decks(batch_size)
         else:
-            decks_1 = [self.config.deck_id_1] * (batch_size * num_buffers)
-            decks_2 = [self.config.deck_id_2] * (batch_size * num_buffers)
+            decks_1 = [self.config.deck_id_1] * batch_size
+            decks_2 = [self.config.deck_id_2] * batch_size
 
+        # === 2. Load past model (Self-Play opponent) ===
         use_past_self_play = False
         past_params = None
         if self.config.past_self_play:
@@ -520,246 +519,219 @@ class RNaDLearner:
                         logging.warning(f"Failed to load past checkpoint {chosen_cp}: {e}")
                         use_past_self_play = False
 
-        buffer_agent_ids = []
+        # === 3. Simulator initialization ===
+        sim = deckgym.PyBatchedSimulator(
+            self.config.deck_id_1,
+            self.config.deck_id_2,
+            batch_size,
+            self.config.win_reward,
+            self.config.point_reward,
+            self.config.damage_reward
+        )
+        
+        initial_obs, initial_current_players, initial_mask = sim.reset(
+            seed=int(jax.random.randint(key, (), 0, 1000000)),
+            deck_ids_1=decks_1,
+            deck_ids_2=decks_2
+        )
 
-        for b in range(num_buffers):
-            start_idx = b * batch_size
-            end_idx = start_idx + batch_size
-            
-            sim = deckgym.PyBatchedSimulator(
-                self.config.deck_id_1,
-                self.config.deck_id_2,
-                batch_size,
-                self.config.win_reward,
-                self.config.point_reward,
-                self.config.damage_reward
-            )
-            
-            initial_obs, initial_current_players, initial_mask = sim.reset(
-                seed=int(jax.random.randint(key, (), 0, 1000000)) + b,
-                deck_ids_1=decks_1[start_idx:end_idx],
-                deck_ids_2=decks_2[start_idx:end_idx]
-            )
-            simulators.append(sim)
+        # State management buffer (single)
+        sb = {
+            'current_obs': np.array(initial_obs),
+            'current_players': np.array(initial_current_players),
+            'current_mask': np.array(initial_mask),
+            'active_mask': np.ones(batch_size, dtype=bool),
+            'episode_outcomes': np.zeros(batch_size, dtype=int),
+            'outcome_recorded': np.zeros(batch_size, dtype=bool),
+            'episode_lengths': np.zeros(batch_size, dtype=int)
+        }
 
-            current_obs = np.array(initial_obs)
-            current_players = np.array(initial_current_players)
-            current_mask = np.array(initial_mask)
-            
-            state_buffers.append({
-                'current_obs': current_obs,
-                'current_players': current_players,
-                'current_mask': current_mask,
-                'active_mask': np.ones(batch_size, dtype=bool),
-                'episode_outcomes': np.zeros(batch_size, dtype=int),
-                'outcome_recorded': np.zeros(batch_size, dtype=bool),
-                'episode_lengths': np.zeros(batch_size, dtype=int)
-            })
+        # Trajectory buffer (single)
+        tb = {
+            'obs_buf': np.zeros((max_len, batch_size, *self.obs_shape), dtype=np.float32),
+            'mask_buf': np.zeros((max_len, batch_size, self.num_actions), dtype=np.float32),
+            'act_buf': np.zeros((max_len, batch_size), dtype=np.int32),
+            'rew_buf': np.zeros((max_len, batch_size), dtype=np.float32),
+            'log_prob_buf': np.zeros((max_len, batch_size), dtype=np.float32),
+            'ptrs': np.zeros(batch_size, dtype=int)
+        }
 
-            traj_buffers.append({
-                'obs_buf': np.zeros((max_len, batch_size, *self.obs_shape), dtype=np.float32),
-                'mask_buf': np.zeros((max_len, batch_size, self.num_actions), dtype=np.float32),
-                'act_buf': np.zeros((max_len, batch_size), dtype=np.int32),
-                'rew_buf': np.zeros((max_len, batch_size), dtype=np.float32),
-                'log_prob_buf': np.zeros((max_len, batch_size), dtype=np.float32),
-                'ptrs': np.zeros(batch_size, dtype=int)
-            })
+        agent_ids = np.zeros(batch_size, dtype=int)
+        if use_past_self_play:
+            agent_ids = np.random.randint(0, 2, size=batch_size)
 
-            agent_ids = np.zeros(batch_size, dtype=int)
-            if use_past_self_play:
-                agent_ids = np.random.randint(0, 2, size=batch_size)
-            buffer_agent_ids.append(agent_ids)
+        # === 4. First inference (Pipeline start) ===
+        # Send request to GPU, run in background while CPU processes
+        future = self._inference_fn(self.params, sb['current_obs'], mask=sb['current_mask'])
 
-            # Prime Inference
-            futures.append(self._inference_fn(self.params, current_obs, mask=current_mask))
-
-        # Main Loop
+        # === 5. Main loop ===
         for i_step in range(max_len):
-             # Check termination
-             is_any_active = False
-             for b in range(num_buffers):
-                 if state_buffers[b]['active_mask'].any():
-                     is_any_active = True
-                     break
-             if not is_any_active:
+             if not sb['active_mask'].any():
                  break
 
-             for b in range(num_buffers):
-                 sb = state_buffers[b]
-                 tb = traj_buffers[b]
-                 agent_ids = buffer_agent_ids[b]
-                 sim = simulators[b]
+             # A. Inference result reception
+             logits = future
+             logits.block_until_ready() # Wait for GPU calculation completion
+             logits_np = np.array(logits)
+
+             # B. Mix with past model (Self-Play)
+             final_logits = logits_np
+             if use_past_self_play:
+                 past_logits = self._inference_fn(past_params, sb['current_obs'], mask=sb['current_mask'])
+                 past_logits_np = np.array(past_logits)
+                 mask_agent = (sb['current_players'] == agent_ids)
+                 # Vectorized mixing process
+                 final_logits = np.where(mask_agent[:, None], logits_np, past_logits_np)
+
+             # C. Simulation execution (Rust)
+             (next_obs, rewards, dones, _, valid_mask, actions, log_probs, next_current_players, next_mask) = \
+                 sim.sample_and_step(final_logits)
+
+             # === D. Pipeline optimization and data saving ===
+             
+             # Save current state for saving
+             old_obs = sb['current_obs']
+             old_mask = sb['current_mask']
+             old_active = sb['active_mask'].copy()
+             old_players = sb['current_players'].copy() # Needed to determine whose turn it was
+
+             # Update to next state
+             sb['current_obs'] = np.array(next_obs)
+             sb['current_players'] = np.array(next_current_players)
+             sb['current_mask'] = np.array(next_mask)
+             
+             # Active determination (deactivate if completed or invalid)
+             still_active = old_active & (~dones) & valid_mask.astype(bool)
+             sb['active_mask'] = still_active
+
+             # Next inference immediately (GPU runs while CPU saves)
+             if sb['active_mask'].any():
+                 future = self._inference_fn(self.params, sb['current_obs'], mask=sb['current_mask'])
+
+             # Data saving (vectorized for speed)
+             write_mask = old_active & valid_mask.astype(bool)
+             if use_past_self_play:
+                 # Save only if it was the learning agent's turn
+                 write_mask = write_mask & (old_players == agent_ids)
+
+             write_indices = np.where(write_mask)[0]
+             if write_indices.size > 0:
+                 current_ptrs = tb['ptrs'][write_indices]
+                 valid_ptr_mask = current_ptrs < max_len
+                 final_indices = write_indices[valid_ptr_mask]
+                 final_ptrs = current_ptrs[valid_ptr_mask]
                  
-                 if not sb['active_mask'].any():
-                     continue
+                 if final_indices.size > 0:
+                     tb['obs_buf'][final_ptrs, final_indices] = old_obs[final_indices]
+                     tb['mask_buf'][final_ptrs, final_indices] = old_mask[final_indices]
+                     tb['act_buf'][final_ptrs, final_indices] = actions[final_indices]
+                     tb['rew_buf'][final_ptrs, final_indices] = rewards[final_indices]
+                     tb['log_prob_buf'][final_ptrs, final_indices] = log_probs[final_indices]
+                     tb['ptrs'][final_indices] += 1
+                     sb['episode_lengths'][final_indices] += 1
 
-                 # 1. Wait for Inference
-                 t0 = time.time()
-                 logits = futures[b]
-                 logits.block_until_ready()
-                 logits_np = np.array(logits)
-                 if i_step % 100 == 0:
-                     t1 = time.time()
-
-                 # Past self-play mixing
-                 final_logits = logits_np
-                 if use_past_self_play:
-                     past_logits = self._inference_fn(past_params, sb['current_obs'], mask=sb['current_mask'])
-                     past_logits_np = np.array(past_logits)
-                     mask_agent = (sb['current_players'] == agent_ids)
-                     final_logits = np.where(mask_agent[:, None], logits_np, past_logits_np)
-
-                 # 2. Step with Rust
-                 if i_step % 100 == 0:
-                     t3 = time.time()
-                 (next_obs, rewards, dones, _, valid_mask, actions, log_probs, next_current_players, next_mask) = \
-                     sim.sample_and_step(final_logits)
-                 if i_step % 100 == 0:
-                     t4 = time.time()
-                 
-                 # 3. Storage
-                 old_obs = sb['current_obs'] # Store reference to old obs for trajectory
-                 old_mask = sb['current_mask']
-                 
-                 for i in range(batch_size):
-                     if sb['active_mask'][i]:
-                         if valid_mask[i]:
-                             sb['episode_lengths'][i] += 1
-                             
-                             should_store = True
-                             if use_past_self_play:
-                                 if sb['current_players'][i] != agent_ids[i]:
-                                     should_store = False
-                             
-                             if should_store:
-                                 idx = tb['ptrs'][i]
-                                 if idx < max_len:
-                                     tb['obs_buf'][idx, i] = old_obs[i]
-                                     tb['mask_buf'][idx, i] = old_mask[i]
-                                     tb['act_buf'][idx, i] = actions[i]
-                                     tb['rew_buf'][idx, i] = rewards[i]
-                                     tb['log_prob_buf'][idx, i] = log_probs[i]
-                                     tb['ptrs'][i] += 1
-                         
-                         if dones[i]:
-                             sb['active_mask'][i] = False
-                             if not sb['outcome_recorded'][i]:
-                                 actor = sb['current_players'][i]
-                                 r = rewards[i]
-                                 if abs(r) > 1e-3:
-                                     if r > 0:
-                                         sb['episode_outcomes'][i] = 1 if actor == 0 else 2
-                                     else:
-                                         sb['episode_outcomes'][i] = 2 if actor == 0 else 1
-                                 else:
-                                     sb['episode_outcomes'][i] = 0
-                                 sb['outcome_recorded'][i] = True
-                         elif not valid_mask[i]:
-                             # Invalid action but not done? Usually implies skipping or error, 
-                             # but here handled as masking out without done. 
-                             # Or strict masking. Assuming keeping active if not done.
-                             # Original code set active_mask=False on invalid.
-                             sb['active_mask'][i] = False
-
-                 # 4. Update State & Dispatch Next
-                 sb['current_obs'] = np.array(next_obs)
-                 sb['current_players'] = np.array(next_current_players)
-                 sb['current_mask'] = np.array(next_mask)
-                 
-                 if sb['active_mask'].any():
-                     futures[b] = self._inference_fn(self.params, sb['current_obs'], mask=sb['current_mask'])
-
-                 if i_step % 100 == 0:
-                     t5 = time.time()
-                     logging.info(f"Step {i_step} (Buf {b}): Inference+Transfer={t1-t0:.4f}s, Sim(Rust)={t4-t3:.4f}s, Store={t5-t4:.4f}s, Total={t5-t0:.4f}s")
+             # Record win/loss (vectorized)
+             just_finished = old_active & dones
+             finished_indices = np.where(just_finished)[0]
+             if finished_indices.size > 0:
+                 needs_record_mask = ~sb['outcome_recorded'][finished_indices]
+                 rec_indices = finished_indices[needs_record_mask]
+                 if rec_indices.size > 0:
+                     r_vals = rewards[rec_indices]
+                     actors = old_players[rec_indices]
+                     
+                     outcomes = np.zeros(len(rec_indices), dtype=int)
+                     # actor=0 (P1) wins if r > 0, loses if r < 0
+                     win_cond = r_vals > 1e-3
+                     lose_cond = r_vals < -1e-3
+                     
+                     p1_win = (win_cond & (actors == 0)) | (lose_cond & (actors == 1))
+                     p2_win = (win_cond & (actors == 1)) | (lose_cond & (actors == 0))
+                     
+                     outcomes[p1_win] = 1
+                     outcomes[p2_win] = 2
+                     
+                     sb['episode_outcomes'][rec_indices] = outcomes
+                     sb['outcome_recorded'][rec_indices] = True
         
-        # Merge Results
-        # We need to concatenate the batch dimensions of all buffers
-        # Result buffers should be (max_len, total_batch_size, *)
-        
-        total_batch_size = batch_size * num_buffers
-        
-        merged_obs = np.concatenate([t['obs_buf'] for t in traj_buffers], axis=1)
-        merged_mask = np.concatenate([t['mask_buf'] for t in traj_buffers], axis=1)
-        merged_act = np.concatenate([t['act_buf'] for t in traj_buffers], axis=1)
-        merged_rew = np.concatenate([t['rew_buf'] for t in traj_buffers], axis=1)
-        merged_log_prob = np.concatenate([t['log_prob_buf'] for t in traj_buffers], axis=1)
-        
-        # Bootstrap values
-        # We need to run value fn on final observations for active envs
-        merged_bootstrap = np.zeros(total_batch_size, dtype=np.float32)
-        
-        for b in range(num_buffers):
-            sb = state_buffers[b]
-            if sb['active_mask'].any():
-                if self.config.timeout_reward is not None:
-                    vals_np = np.full(batch_size, self.config.timeout_reward, dtype=np.float32)
-                else:
-                    vals = self._value_fn(self.params, sb['current_obs'])
-                    vals_np = np.array(vals).reshape(-1)
-                # Map back to global indices
-                start_i = b * batch_size
-                for i in range(batch_size):
-                    if sb['active_mask'][i]:
-                        merged_bootstrap[start_i + i] = vals_np[i]
+        # === 6. Result aggregation and return ===
+        # Bootstrap values (not finished episodes' final state values)
+        merged_bootstrap = np.zeros(batch_size, dtype=np.float32)
+        if sb['active_mask'].any():
+            if self.config.timeout_reward is not None:
+                 vals_np = np.full(batch_size, self.config.timeout_reward, dtype=np.float32)
+            else:
+                 vals = self._value_fn(self.params, sb['current_obs'])
+                 vals_np = np.array(vals).reshape(-1)
+            
+            active_idxs = np.where(sb['active_mask'])[0]
+            if active_idxs.size > 0:
+                merged_bootstrap[active_idxs] = vals_np[active_idxs]
 
         # Stats
-        all_lengths = np.concatenate([s['episode_lengths'] for s in state_buffers])
-        all_outcomes = np.concatenate([s['episode_outcomes'] for s in state_buffers])
-        
-        mean_len = np.mean(all_lengths)
-        max_len_stat = np.max(all_lengths)
-        
-        p1_wins = np.sum(all_outcomes == 1)
-        p2_wins = np.sum(all_outcomes == 2)
-        ties = np.sum(all_outcomes == 0)
+        p1_wins = np.sum(sb['episode_outcomes'] == 1)
+        p2_wins = np.sum(sb['episode_outcomes'] == 2)
+        ties = np.sum(sb['episode_outcomes'] == 0)
         
         batch_out = {
-            'obs': jnp.array(merged_obs),
-            'mask': jnp.array(merged_mask),
-            'act': jnp.array(merged_act),
-            'rew': jnp.array(merged_rew),
-            'log_prob': jnp.array(merged_log_prob),
+            'obs': jnp.array(tb['obs_buf']),
+            'mask': jnp.array(tb['mask_buf']),
+            'act': jnp.array(tb['act_buf']),
+            'rew': jnp.array(tb['rew_buf']),
+            'log_prob': jnp.array(tb['log_prob_buf']),
             'bootstrap_value': jnp.array(merged_bootstrap),
             'stats': {
-                'mean_episode_length': mean_len,
-                'max_episode_length': max_len_stat,
-                'p1_win_rate': p1_wins / total_batch_size,
-                'decisive_rate': (p1_wins + p2_wins) / total_batch_size,
-                'tie_rate': ties / total_batch_size
+                'mean_episode_length': np.mean(sb['episode_lengths']),
+                'max_episode_length': np.max(sb['episode_lengths']),
+                'p1_win_rate': p1_wins / batch_size,
+                'decisive_rate': (p1_wins + p2_wins) / batch_size,
+                'tie_rate': ties / batch_size
             }
         }
         return batch_out
-
 import queue
 import threading
 
-class TrajectoryGenerator(threading.Thread):
-    def __init__(self, learner, num_workers=1, max_queue_size=10):
-        super().__init__()
+class TrajectoryGenerator:
+    """
+    Many workers generate trajectories in parallel to maximize GPU utilization.
+    """
+    def __init__(self, learner, num_workers=4, max_queue_size=20):
         self.learner = learner
-        self.num_workers = num_workers
+        self.num_workers = num_workers 
         self.queue = queue.Queue(maxsize=max_queue_size)
-        self.stopped = False
-        self.daemon = True
+        self.stop_event = threading.Event()
+        self.threads = []
 
-    def run(self):
-        worker_id = 0
-        while not self.stopped:
-            try:
-                key = jax.random.PRNGKey(self.learner.config.seed + worker_id)
-                batch = self.learner.generate_trajectories(key)
-                self.queue.put(batch)
-                worker_id += 1
-            except Exception as e:
-                logging.error(f"Error in TrajectoryGenerator: {e}")
-                break
+    def start(self):
+        logging.info(f"Starting TrajectoryGenerator with {self.num_workers} workers.")
+        for i in range(self.num_workers):
+            t = threading.Thread(target=self._worker, args=(i,), daemon=True)
+            t.start()
+            self.threads.append(t)
 
     def stop(self):
-        self.stopped = True
+        self.stop_event.set()
 
     def get_batch(self):
         return self.queue.get()
+
+    def _worker(self, worker_id):
+        seed_base = self.learner.config.seed + (worker_id * 10000)
+        rng = np.random.RandomState(seed_base)
+        
+        while not self.stop_event.is_set():
+            try:
+                step_seed = rng.randint(0, 2**30)
+                key = jax.random.PRNGKey(step_seed)
+                
+                batch = self.learner.generate_trajectories(key)
+                
+                self.queue.put(batch)
+                
+            except Exception as e:
+                logging.error(f"Worker {worker_id} crashed: {e}")
+                time.sleep(1.0)
 
 def evaluate_against_baseline(learner: RNaDLearner, baseline_params: Any, config: RNaDConfig, num_games: int) -> Dict[str, float]:
     """
@@ -968,7 +940,7 @@ def train_loop(config: RNaDConfig, experiment_manager: Optional[Any] = None, che
     save_interval = config.save_interval if hasattr(config, 'save_interval') else 1000
 
     # Start Trajectory Generator
-    generator = TrajectoryGenerator(learner)
+    generator = TrajectoryGenerator(learner, num_workers=8, max_queue_size=20)
     generator.start()
     
     # Capture baseline parameters (Step 0)
