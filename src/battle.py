@@ -89,6 +89,15 @@ def extract_state_info(rust_state):
         # Active
         active = rust_state.get_active_pokemon(p)
         if active:
+            tool_info = None
+            if hasattr(active, "attached_tool") and active.attached_tool:
+                tool = active.attached_tool
+                tool_info = {
+                    "id": tool.id,
+                    "name": tool.name,
+                    "url": get_card_image_url(tool.id)
+                }
+
             p_info["active"] = {
                 "id": active.card.id,
                 "name": active.name,
@@ -96,6 +105,7 @@ def extract_state_info(rust_state):
                 "hp": active.remaining_hp,
                 "max_hp": active.total_hp,
                 "energy": str(active.attached_energy),
+                "tool": tool_info,
                 "status": []
             }
             if active.poisoned: p_info["active"]["status"].append("Poisoned")
@@ -111,6 +121,16 @@ def extract_state_info(rust_state):
         for mon in bench:
             if not mon:
                 continue
+
+            tool_info = None
+            if hasattr(mon, "attached_tool") and mon.attached_tool:
+                tool = mon.attached_tool
+                tool_info = {
+                    "id": tool.id,
+                    "name": tool.name,
+                    "url": get_card_image_url(tool.id)
+                }
+
             p_info["bench"].append({
                 "id": mon.card.id,
                 "name": mon.name,
@@ -118,6 +138,7 @@ def extract_state_info(rust_state):
                 "hp": mon.remaining_hp,
                 "max_hp": mon.total_hp,
                 "energy": str(mon.attached_energy),
+                "tool": tool_info,
                 "status": [] # Bench usually has no status
             })
 
@@ -160,6 +181,8 @@ def generate_html(history, output_path):
         .card-img {{ width: 100%; border-radius: 5px; box-shadow: 2px 2px 5px rgba(0,0,0,0.2); }}
         .card-stats {{ position: absolute; bottom: 0; left: 0; right: 0; background: rgba(0,0,0,0.7); color: white; font-size: 10px; padding: 2px; text-align: center; }}
         .status-icon {{ position: absolute; top: 0; right: 0; background: red; color: white; border-radius: 50%; width: 15px; height: 15px; font-size: 10px; display: flex; align-items: center; justify-content: center; }}
+        .tool-icon {{ position: absolute; top: 20px; right: -10px; width: 25px; height: 35px; z-index: 10; }}
+        .tool-img {{ width: 100%; height: 100%; border-radius: 3px; box-shadow: 1px 1px 3px rgba(0,0,0,0.3); border: 1px solid white; }}
 
         .log {{ margin-top: 20px; max-height: 150px; overflow-y: auto; background: #eee; padding: 10px; font-family: monospace; }}
         .chart-container {{ margin-top: 20px; height: 300px; }}
@@ -204,9 +227,15 @@ def generate_html(history, output_path):
                 statusHtml = `<div class="status-icon" title="${{card.status.join(', ')}}">!</div>`;
             }}
 
+            let toolHtml = '';
+            if (card.tool) {{
+                toolHtml = `<div class="tool-icon" title="${{card.tool.name}}"><img src="${{card.tool.url}}" class="tool-img" onerror="this.src='https://via.placeholder.com/25x35?text=T'"></div>`;
+            }}
+
             return `
                 <div class="card-container">
                     <img src="${{card.url}}" alt="${{card.name}}" class="card-img" onerror="this.src='https://via.placeholder.com/50x70?text=${{encodeURIComponent(card.name)}}'">
+                    ${{toolHtml}}
                     ${{statsHtml}}
                     ${{statusHtml}}
                 </div>
