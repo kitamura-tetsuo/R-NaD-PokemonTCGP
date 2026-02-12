@@ -181,6 +181,7 @@ class RNaDConfig(NamedTuple):
     transformer_embed_dim: int = 64
     transformer_seq_len: int = 16
     timeout_reward: Optional[float] = None
+    seed: int = 42
 
 
 def v_trace(
@@ -313,6 +314,7 @@ class RNaDLearner:
             {
                 "deck_id_1": config.deck_id_1,
                 "deck_id_2": config.deck_id_2,
+                "seed": config.seed,
                 "max_game_length": config.unroll_length
             }
         )
@@ -942,7 +944,7 @@ class TrajectoryGenerator(threading.Thread):
         worker_id = 0
         while not self.stopped:
             try:
-                key = jax.random.PRNGKey(worker_id)
+                key = jax.random.PRNGKey(self.learner.config.seed + worker_id)
                 batch = self.learner.generate_trajectories(key)
                 self.queue.put(batch)
                 worker_id += 1
@@ -1011,7 +1013,8 @@ def evaluate_against_baseline(learner: RNaDLearner, baseline_params: Any, config
             current_batch = min(batch_size, n_games - played)
             
             # Init games
-            games = [PyGameState(d1_path, d2_path, None) for _ in range(current_batch)]
+            # Use deterministic seed sequence for evaluation based on global seed
+            games = [PyGameState(d1_path, d2_path, config.seed + played + i) for i in range(current_batch)]
             
             active_mask = np.ones(current_batch, dtype=bool)
             current_obs = np.array([g.encode_observation() for g in games], dtype=np.float32)
@@ -1125,7 +1128,7 @@ def evaluate_against_baseline(learner: RNaDLearner, baseline_params: Any, config
 
 def train_loop(config: RNaDConfig, experiment_manager: Optional[Any] = None, checkpoint_dir: str = "checkpoints", resume_checkpoint: Optional[str] = None):
     learner = RNaDLearner("deckgym_ptcgp", config)
-    learner.init(jax.random.PRNGKey(42))
+    learner.init(jax.random.PRNGKey(config.seed))
 
     start_step = 0
 

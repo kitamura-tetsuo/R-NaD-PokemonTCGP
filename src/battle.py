@@ -446,6 +446,7 @@ def main():
         {
             "deck_id_1": config.deck_id_1,
             "deck_id_2": config.deck_id_2,
+            "seed": args.seed,
             "max_game_length": config.unroll_length
         }
     )
