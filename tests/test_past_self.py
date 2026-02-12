@@ -42,8 +42,17 @@ def test_deckgym_bindings():
     print(f"Reset returned type: {type(res)}")
     
     if isinstance(res, tuple):
-        obs, current_players = res
-        print(f"Obs shape: {len(obs)} x {len(obs[0])}")
+        if len(res) == 2:
+            obs, current_players = res
+            print(f"Obs shape: {len(obs)} x {len(obs[0])}")
+        elif len(res) == 3:
+            obs, current_players, legal_actions = res
+            print(f"Obs shape: {len(obs)} x {len(obs[0])}")
+            print(f"Legal actions shape: {len(legal_actions)} x {len(legal_actions[0])}")
+        else:
+             print(f"Reset returned tuple of length {len(res)}. Unexpected.")
+             return
+
         print(f"Current players: {current_players}")
         assert len(current_players) == batch_size
     else:

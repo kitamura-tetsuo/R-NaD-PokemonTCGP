@@ -203,11 +203,12 @@ def generate_html(history, output_path):
             <!-- Board content rendered here -->
         </div>
 
-        <div class="log" id="log-display"></div>
-
         <div class="chart-container">
             <canvas id="evalChart"></canvas>
         </div>
+
+        <div class="log" id="log-display"></div>
+        <div class="log" id="full-stats-display" style="max-height: 300px;"></div>
     </div>
 
     <script>
@@ -289,12 +290,27 @@ def generate_html(history, output_path):
             // Update Log
             let logText = `Action: ${{state.action_name || "Start"}}`;
             if (state.top_candidates && state.top_candidates.length > 0) {{
-                logText += '\\n\\nAlternative candidates:';
+                logText += '\\n\\nTop alternatives:';
                 state.top_candidates.forEach(cand => {{
                     logText += `\\n- ${{cand.name}}: ${{ (cand.prob * 100).toFixed(1) }}%`;
                 }});
             }}
             document.getElementById('log-display').innerText = logText;
+
+            // Generate Full Stats Table
+            let tableHtml = '<table style="width:100%; border-collapse: collapse;"><thead><tr><th style="border-bottom: 1px solid #ddd; text-align: left;">Action</th><th style="border-bottom: 1px solid #ddd; text-align: right;">Probability</th></tr></thead><tbody>';
+            if (state.all_candidates && state.all_candidates.length > 0) {{
+                state.all_candidates.forEach(cand => {{
+                    const isSelected = (cand.name === state.action_name);
+                    const bg = isSelected ? 'background-color: #bbdefb;' : '';
+                    const weight = isSelected ? 'font-weight: bold;' : '';
+                    tableHtml += `<tr style="${{bg}}${{weight}}"><td style="padding: 4px; border-bottom: 1px solid #eee;">${{cand.name}}</td><td style="padding: 4px; border-bottom: 1px solid #eee; text-align: right;">${{(cand.prob * 100).toFixed(2)}}%</td></tr>`;
+                }});
+            }} else {{
+                 tableHtml += '<tr><td colspan="2">No probability data available</td></tr>';
+            }}
+            tableHtml += '</tbody></table>';
+            document.getElementById('full-stats-display').innerHTML = tableHtml;
 
             updateChart();
         }}
@@ -620,6 +636,7 @@ def main():
 
         current_player = state.current_player()
         top_candidates = []
+        all_candidates = []
 
         if state.is_chance_node():
             outcomes = state.chance_outcomes()
@@ -657,14 +674,16 @@ def main():
             # Get top 3 alternative candidates
             sorted_indices = np.argsort(probs)[::-1]
             for idx in sorted_indices:
-                if idx == action:
-                    continue # Skip selected action
                 if probs[idx] <= 0:
                     continue
                 cand_name = state.action_to_string(current_player, idx)
-                top_candidates.append({"name": cand_name, "prob": float(probs[idx])})
-                if len(top_candidates) >= 3:
-                    break
+
+                # Add to all candidates
+                all_candidates.append({"name": cand_name, "prob": float(probs[idx])})
+
+                # Add to top candidates (skipping selected action)
+                if idx != action and len(top_candidates) < 3:
+                    top_candidates.append({"name": cand_name, "prob": float(probs[idx])})
 
             state.apply_action(action)
 
@@ -673,6 +692,7 @@ def main():
         info["action_name"] = action_name
         info["acting_player"] = current_player
         info["top_candidates"] = top_candidates
+        info["all_candidates"] = all_candidates
         
         # Evaluations
         for p in [0, 1]:
