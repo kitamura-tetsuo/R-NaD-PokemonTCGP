@@ -55,7 +55,7 @@ class TestCheckpoint(unittest.TestCase):
         self.assertFalse(jnp.array_equal(learner.params[k][k2], initial_params[k][k2]))
 
         # Load checkpoint
-        loaded_step = learner.load_checkpoint(ckpt_path)
+        loaded_step, metadata = learner.load_checkpoint(ckpt_path)
 
         # Verify step
         self.assertEqual(loaded_step, step)
