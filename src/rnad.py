@@ -13,6 +13,9 @@ from typing import NamedTuple, Tuple, List, Dict, Any, Optional
 from src.models import DeckGymNet, TransformerNet, CardTransformerNet
 from functools import partial
 
+# Enable bfloat16 for TPU v6e
+jax.config.update("jax_default_matmul_precision", "bfloat16")
+
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -394,13 +397,19 @@ class RNaDLearner:
         # JIT the inference function for speed
         @jax.jit
         def _inference_fn(params, obs, mask=None):
+            # TPU optimization: cast to bfloat16
+            obs = obs.astype(jnp.bfloat16)
             logits, _ = self.network.apply(params, jax.random.PRNGKey(0), obs, mask=mask)
+            # Logits should remain float32 for stability usually, but let's check if output is already f32.
+            # Usually network outputs f32 if not configured otherwise.
             return logits
         self._inference_fn = _inference_fn
 
         # JIT the value function for bootstrapping
         @jax.jit
         def _value_fn(params, obs):
+            # TPU optimization: cast to bfloat16
+            obs = obs.astype(jnp.bfloat16)
             _, values = self.network.apply(params, jax.random.PRNGKey(0), obs)
             return values
         self._value_fn = _value_fn

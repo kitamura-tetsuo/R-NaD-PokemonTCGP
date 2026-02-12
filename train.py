@@ -21,7 +21,7 @@ def get_run_id_from_checkpoint(path):
 
 def main():
     parser = argparse.ArgumentParser(description="Train R-NaD agent on deckgym_ptcgp")
-    parser.add_argument("--batch_size", type=int, default=8, help="Batch size")
+    parser.add_argument("--batch_size", type=int, default=256, help="Batch size")
     parser.add_argument("--max_steps", type=int, default=1000, help="Maximum training steps")
     parser.add_argument("--learning_rate", type=float, default=3e-4, help="Learning rate")
     parser.add_argument("--hidden_size", type=int, default=256, help="Hidden size for network")

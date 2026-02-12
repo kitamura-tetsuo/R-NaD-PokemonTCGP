@@ -62,14 +62,15 @@ class TransformerBlock(hk.Module):
             num_heads=self.num_heads,
             key_size=self.key_size,
             w_init=hk.initializers.VarianceScaling(2.0),
+            model_size=d,
         )(x, x, x)
         
         # Add & Norm
         x = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)(x + attn_out)
         
-        # MLP: 出力次元を d に合わせて Add & Norm 可能にする
+        # MLP: Output dimension is adjusted to d to enable Add & Norm
         mlp_out = hk.nets.MLP(
-            [d * 2, d],
+            [d * 4, d],
             activation=jax.nn.gelu
         )(x)
         
@@ -79,7 +80,7 @@ class TransformerBlock(hk.Module):
         return x
 
 class TransformerNet(hk.Module):
-    def __init__(self, num_actions, hidden_size=64, num_blocks=2, num_heads=4, seq_len=16):
+    def __init__(self, num_actions, hidden_size, num_blocks, num_heads, seq_len):
         super().__init__()
         self.num_actions = num_actions
         self.hidden_size = hidden_size # Embed Dim
@@ -134,26 +135,26 @@ class TransformerNet(hk.Module):
         return policy_logits, value
 
 class PrecomputedEmbedding(hk.Module):
-    """事前計算済み特徴量テーブルからベクトルをLookupするモジュール"""
+    """Module to lookup vectors from precomputed feature tables"""
     def __init__(self, embedding_matrix, output_dim, name=None):
         super().__init__(name=name)
         self.embedding_matrix = embedding_matrix # shape: (TotalCards, FeatureDim)
         self.output_dim = output_dim
 
     def __call__(self, card_ids):
-        # card_ids: (Batch, NumSlots) の整数配列
+        # card_ids: (Batch, NumSlots) integer array
         
-        # 1. テーブルを定数パラメータとして定義 (学習しない)
+        # 1. Define the table as a constant parameter (not learned)
         table = hk.get_parameter(
             "feature_table",
             shape=self.embedding_matrix.shape,
             init=hk.initializers.Constant(self.embedding_matrix)
         )
-        table = jax.lax.stop_gradient(table) # 固定する
+        table = jax.lax.stop_gradient(table) # Fix it
         
-        # 2. IDに対応するベクトルを引く (Lookup)
-        # 負のID (-1.0) は null として扱う (index 0 が null と想定するか、あるいは clip する)
-        # ここでは clip(0, num_cards-1) してから、有効なIDかどうかでマスクするのが安全
+        # 2. Lookup vectors corresponding to IDs
+        # Negative IDs (-1.0) are treated as null (assuming index 0 is null, or clip)
+        # Here, clip(0, num_cards-1) and then mask by valid ID is safe
         num_cards = self.embedding_matrix.shape[0]
         valid_mask = (card_ids >= 0) & (card_ids < num_cards)
         safe_ids = jnp.where(valid_mask, card_ids, 0)
@@ -161,31 +162,31 @@ class PrecomputedEmbedding(hk.Module):
         # x shape: (Batch, NumSlots, FeatureDim)
         x = jnp.take(table, safe_ids, axis=0)
         
-        # 無効なIDの部分をゼロ埋め
+        # Mask invalid IDs with zeros
         x = jnp.where(valid_mask[..., None], x, 0.0)
         
-        # 3. Transformerの次元(hidden_size)に合わせて圧縮/変換
+        # 3. Compress/transform to Transformer dimension (hidden_size)
         x = hk.Linear(self.output_dim)(x)
         return x
 
 class HybridEmbedding(hk.Module):
-    """汎用ベクトル(Static) + 補正パッチ(Residual) を組み合わせた埋め込み"""
+    """Embedding combining general vectors (Static) and correction patches (Residual)"""
     def __init__(self, pretrained_matrix, output_dim, name=None):
         super().__init__(name=name)
         self.pretrained_matrix = pretrained_matrix # (NumCards, FeatureDim)
         self.output_dim = output_dim
 
     def __call__(self, card_ids):
-        # 1. Static Path (テキストの意味)
-        #    PrecomputedEmbedding 内で Linear 投影まで行われる
+        # 1. Static Path (text meaning)
+        #    Linear projection is performed within PrecomputedEmbedding
         static_proj = PrecomputedEmbedding(
             self.pretrained_matrix, 
             self.output_dim, 
             name="static_path"
         )(card_ids)
 
-        # 2. Residual Path (IDごとの例外補正)
-        #    w_init=0 で初期化し、学習が進むにつれて例外を吸収する
+        # 2. Residual Path (ID-specific exception correction)
+        #    Initialized with w_init=0, absorbs exceptions as training progresses
         num_cards = self.pretrained_matrix.shape[0]
         valid_mask = (card_ids >= 0) & (card_ids < num_cards)
         safe_ids = jnp.where(valid_mask, card_ids, 0)
@@ -197,10 +198,10 @@ class HybridEmbedding(hk.Module):
             name="residual_path"
         )(safe_ids)
 
-        # 無効なIDの部分をゼロ埋め
+        # Mask invalid IDs with zeros
         residual_emb = jnp.where(valid_mask[..., None], residual_emb, 0.0)
 
-        # 3. Add (統合)
+        # 3. Add (Integration)
         return static_proj + residual_emb
 
 class CardTransformerNet(hk.Module):
@@ -216,7 +217,7 @@ class CardTransformerNet(hk.Module):
         # x: (Batch, ObsDim)
         batch_size = x.shape[0]
         
-        # 1. 情報の抽出
+        # 1. Extract information
         turn_info = x[:, :39]
         board_part = x[:, 39:39+192].reshape(batch_size, 8, 24)
         hand_ids = x[:, 231:241].astype(jnp.int32)
@@ -225,27 +226,27 @@ class CardTransformerNet(hk.Module):
         discard_ids = x[:, 262:272].astype(jnp.int32)
         opp_discard_ids = x[:, 272:282].astype(jnp.int32)
         
-        # 2. 埋め込み (Board)
+        # 2. Embedding (Board)
         board_card_ids = board_part[:, :, 11].astype(jnp.int32)
         board_card_emb = HybridEmbedding(self.embedding_matrix, self.hidden_size, name="emb_board")(board_card_ids)
         
-        # 盤面の動的特徴量
+        # Board dynamic features
         indices = [i for i in range(24) if i != 11]
         board_features = board_part[:, :, indices]
         board_features = hk.Linear(self.hidden_size, name="lin_board_feat")(board_features)
         board_slot_repr = board_card_emb + board_features
         
-        # 3. 埋め込み (Hand, Deck, Discard)
+        # 3. Embedding (Hand, Deck, Discard)
         hand_emb = HybridEmbedding(self.embedding_matrix, self.hidden_size, name="emb_hand")(hand_ids)
         deck_emb = HybridEmbedding(self.embedding_matrix, self.hidden_size, name="emb_deck")(deck_ids)
         discard_emb = HybridEmbedding(self.embedding_matrix, self.hidden_size, name="emb_discard")(discard_ids)
         opp_discard_emb = HybridEmbedding(self.embedding_matrix, self.hidden_size, name="emb_opp_discard")(opp_discard_ids)
 
-        # 4. Usability Flags の追加 (連結)
-        # 4つのフラグを各トークンの後ろに連結して、計 hidden_size + 4 次元の入力を構成する
+        # 4. Add Usability Flags (Concatenation)
+        # Concatenate 4 flags to each token, resulting in hidden_size + 4 dimensional input
         if mask is not None:
             C = self.embedding_matrix.shape[0]
-            # Offsets (encoding.rs と一致させる)
+            # Offsets (match encoding.rs)
             off_atk = 1
             off_ret = 4
             off_abl = 8
@@ -254,8 +255,8 @@ class CardTransformerNet(hk.Module):
             off_play = 12 + 8 * C
             off_tool = 12 + 9 * C + 40
             
-            # (1) 盤面フラグ: ワザ1, ワザ2, 特性, 逃げる
-            # 自分の盤面 (0..3)
+            # (1) Board flags: Attack 1, Attack 2, Ability, Retreat
+            # My board (0..3)
             # Active
             my_atk1 = mask[:, off_atk:off_atk+1]
             my_atk2 = mask[:, off_atk+1:off_atk+2]
@@ -275,7 +276,7 @@ class CardTransformerNet(hk.Module):
             opp_board_flags = jnp.zeros((batch_size, 4, 4))
             all_board_flags = jnp.concatenate([my_board_flags, opp_board_flags], axis=1)
             
-            # (2) 手札フラグ: 使用可否 (第1フラグ)
+            # (2) Hand flags: Usability (1st flag)
             batch_idx = jnp.arange(batch_size)[:, None]
             safe_hand_ids = jnp.where(hand_ids >= 0, hand_ids, 0)
             
@@ -288,19 +289,19 @@ class CardTransformerNet(hk.Module):
             hand_usable = jnp.where(hand_ids >= 0, hand_usable, 0.0)
             hand_flags = jnp.stack([hand_usable, jnp.zeros_like(hand_usable), jnp.zeros_like(hand_usable), jnp.zeros_like(hand_usable)], axis=-1)
             
-            # (3) 他 (Deck, Discard) は 0 パディング
+            # (3) Others (Deck, Discard) are zero padded
             deck_flags = jnp.zeros((batch_size, 20, 4))
             discard_flags = jnp.zeros((batch_size, 10, 4))
             opp_discard_flags = jnp.zeros((batch_size, 10, 4))
             
-            # 連結
+            # Concatenate
             board_slot_repr = jnp.concatenate([board_slot_repr, all_board_flags], axis=-1)
             hand_emb = jnp.concatenate([hand_emb, hand_flags], axis=-1)
             deck_emb = jnp.concatenate([deck_emb, deck_flags], axis=-1)
             discard_emb = jnp.concatenate([discard_emb, discard_flags], axis=-1)
             opp_discard_emb = jnp.concatenate([opp_discard_emb, opp_discard_flags], axis=-1)
         else:
-            # Maskがない場合 (通常ない想定) はゼロ埋め
+            # If mask is not provided (usually not expected), zero pad
             padding = jnp.zeros((batch_size, 1, 4))
             board_slot_repr = jnp.concatenate([board_slot_repr, jnp.tile(padding, (1, 8, 1))], axis=-1)
             hand_emb = jnp.concatenate([hand_emb, jnp.tile(padding, (1, 10, 1))], axis=-1)
@@ -309,11 +310,20 @@ class CardTransformerNet(hk.Module):
             opp_discard_emb = jnp.concatenate([opp_discard_emb, jnp.tile(padding, (1, 10, 1))], axis=-1)
 
         # 5. Slot Positioning & Sequence Construction
-        # 連結後の次元に合わせて pos_emb も調整する
-        d_augmented = self.hidden_size + 4
+        # Also adjust pos_emb to fit the concatenated dimensions (revert to hidden_size (256) for TPU v6e)
+        
+        # Project features (hidden_size + 4) to hidden_size to ensure 256 alignments
+        projection_layer = hk.Linear(self.hidden_size, name="lin_feature_proj")
+        
+        board_slot_repr = projection_layer(board_slot_repr)
+        hand_emb = projection_layer(hand_emb)
+        deck_emb = projection_layer(deck_emb)
+        discard_emb = projection_layer(discard_emb)
+        opp_discard_emb = projection_layer(opp_discard_emb)
 
         def get_pos_emb(name, num_slots):
-            return hk.get_parameter(name, [1, num_slots, d_augmented], init=hk.initializers.TruncatedNormal())
+             # For TPU, fix hidden_size to 256
+            return hk.get_parameter(name, [1, num_slots, self.hidden_size], init=hk.initializers.TruncatedNormal())
             
         board_pos = get_pos_emb("pos_board", 8)
         hand_pos = get_pos_emb("pos_hand", 10)
@@ -328,19 +338,19 @@ class CardTransformerNet(hk.Module):
             discard_emb + discard_pos,
             opp_discard_emb + opp_discard_pos
         ]
-        x_seq = jnp.concatenate(tokens, axis=1) # (Batch, 58, d_augmented)
+        x_seq = jnp.concatenate(tokens, axis=1) # (Batch, 58, hidden_size)
         
         # 6. Transformer Blocks
         for i in range(self.num_blocks):
-            # TransformerBlock は入力次元 d_augmented を内部で取得する
+            # TransformerBlock internally gets the input dimension hidden_size
             x_seq = TransformerBlock(
                 num_heads=self.num_heads,
-                key_size=d_augmented // self.num_heads,
-                hidden_size=d_augmented,
+                key_size=self.hidden_size // self.num_heads,
+                hidden_size=self.hidden_size,
                 name=f"block_{i}"
             )(x_seq, is_training)
             
-        # 7. Global Features 統合
+        # 7. Global Features Integration
         global_summary = jnp.mean(x_seq, axis=1)
         
         self_deck_count = jnp.sum(deck_ids >= 0, axis=1, keepdims=True).astype(jnp.float32)
@@ -348,7 +358,7 @@ class CardTransformerNet(hk.Module):
         context_repr = hk.Linear(self.hidden_size, name="lin_context")(context_repr)
         context_repr = jax.nn.relu(context_repr)
         
-        # final_repr は hidden_size に合わせておく
+        # final_repr is adjusted to match hidden_size
         final_repr = jnp.concatenate([global_summary, context_repr], axis=-1)
         final_repr = hk.Linear(self.hidden_size, name="lin_final")(final_repr)
         final_repr = jax.nn.relu(final_repr)
