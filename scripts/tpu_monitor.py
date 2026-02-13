@@ -1,47 +1,44 @@
-import os
 import time
 import psutil
-import pandas as pd
-import tensorflow as tf
-from tensorflow.python.profiler import profiler_client
+import subprocess
 import re
 import sys
+from datetime import datetime
 
-def get_tpu_util(tpu_addr):
+def get_tpu_vm_util():
     try:
-        # ポートを8466に変換
-        addr = tpu_addr.replace('8470', '8466')
-        res = profiler_client.monitor(addr, duration_ms=1000, level=2)
-        match = re.search(r"Utilization of TPU Matrix Units .*?:\s+([\d\.]+)%", res)
-        return float(match.group(1)) if match else 0.0
-    except:
+        result = subprocess.run(['tpu-info'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        output = result.stdout
+        
+        match = re.search(r"(\d+\.?\d*)\s*%", output)
+        if match:
+            return float(match.group(1))
+        return 0.0
+    except Exception:
         return 0.0
 
 def main():
-    tpu_addr = os.environ.get('COLAB_TPU_ADDR')
-    if not tpu_addr:
-        print("Error: COLAB_TPU_ADDR not found.")
-        sys.exit(1)
-
-    print("Time,TPU_MXU,CPU,RAM")
-    # CSVのヘッダーを作成
+    print("Monitoring TPU VM (via tpu-info)...")
+    
     with open("stats.csv", "w") as f:
-        f.write("timestamp,tpu_mxu,cpu,ram\n")
+        f.write("timestamp,tpu_util,cpu,ram\n")
 
     try:
         while True:
-            t = time.strftime("%H:%M:%S")
+            t = datetime.now().strftime("%H:%M:%S")
             cpu = psutil.cpu_percent()
             ram = psutil.virtual_memory().percent
-            tpu = get_tpu_util(tpu_addr)
+            
+            tpu = get_tpu_vm_util()
             
             log_line = f"{t},{tpu},{cpu},{ram}"
-            print(log_line) # ターミナルに表示
+            print(log_line)
             
             with open("stats.csv", "a") as f:
                 f.write(log_line + "\n")
             
             time.sleep(5)
+            
     except KeyboardInterrupt:
         print("\nStopped.")
 
