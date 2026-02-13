@@ -57,6 +57,7 @@ def main():
     parser.add_argument("--transformer_embed_dim", type=int, default=256, help="Embedding dimension for transformer")
     parser.add_argument("--transformer_seq_len", type=int, default=32, help="Sequence length for transformer")
     parser.add_argument("--accumulation_steps", type=int, default=1, help="Number of steps to accumulate gradients before updating")
+    parser.add_argument("--update_batch_size", type=int, default=None, help="Batch size for gradient updates (None means same as batch_size)")
     parser.add_argument("--timeout_reward", type=float, default=None, help="Fixed reward for timeout/draw (default: use bootstrap value)")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
 
@@ -99,6 +100,7 @@ def main():
         transformer_embed_dim=args.transformer_embed_dim,
         transformer_seq_len=args.transformer_seq_len,
         accumulation_steps=args.accumulation_steps,
+        update_batch_size=args.update_batch_size,
         timeout_reward=args.timeout_reward,
         seed=args.seed
     )

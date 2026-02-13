@@ -203,6 +203,7 @@ class RNaDConfig(NamedTuple):
     unroll_length: int = 200
     num_buffers: int = 2
     accumulation_steps: int = 1
+    update_batch_size: Optional[int] = None
     model_type: str = "transformer" # "mlp" or "transformer"
     transformer_layers: int = 2
     transformer_heads: int = 4
@@ -384,9 +385,19 @@ class RNaDLearner:
         self.fixed_params = None
         self.opt_state = None
         
+        # Determine SGD batch size and micro-batching
+        self.sgd_batch_size = config.update_batch_size or config.batch_size
+        self.num_micro_batches = config.batch_size // self.sgd_batch_size
+        if config.batch_size % self.sgd_batch_size != 0:
+            logging.warning(f"batch_size ({config.batch_size}) is not divisible by update_batch_size ({self.sgd_batch_size}). "
+                           f"The last {config.batch_size % self.sgd_batch_size} samples will be ignored.")
+
+        total_accumulation_steps = config.accumulation_steps * self.num_micro_batches
+        logging.info(f"Using sgd_batch_size: {self.sgd_batch_size}, num_micro_batches: {self.num_micro_batches}, total_accumulation_steps: {total_accumulation_steps}")
+
         base_optimizer = optax.adam(learning_rate=config.learning_rate)
-        if config.accumulation_steps > 1:
-            self.optimizer = optax.MultiSteps(base_optimizer, every_k_schedule=config.accumulation_steps)
+        if total_accumulation_steps > 1:
+            self.optimizer = optax.MultiSteps(base_optimizer, every_k_schedule=total_accumulation_steps)
         else:
             self.optimizer = base_optimizer
 
@@ -700,6 +711,21 @@ class RNaDLearner:
             }
         }
         return batch_out
+
+def slice_batch(batch: Dict[str, Any], start: int, end: int) -> Dict[str, Any]:
+    """Slices a trajectory batch for micro-batching."""
+    sliced = {}
+    for k, v in batch.items():
+        if k == 'stats':
+            sliced[k] = v
+        elif k == 'bootstrap_value':
+            sliced[k] = v[start:end]
+        elif isinstance(v, (jnp.ndarray, np.ndarray)):
+            # T, B, ... -> slice at dim 1
+            sliced[k] = v[:, start:end]
+        else:
+            sliced[k] = v
+    return sliced
 import queue
 import threading
 
@@ -992,24 +1018,32 @@ def train_loop(config: RNaDConfig, experiment_manager: Optional[Any] = None, che
 
         for i_acc in range(config.accumulation_steps):
             # 1. Get batch from background generator
-            batch = generator.get_batch()
-
-            # 2. Update
-            metrics = learner.update(batch, step)
+            large_batch = generator.get_batch()
             
-            for k, v in metrics.items():
-                if isinstance(v, (int, float, jnp.ndarray)):
-                    metrics_accum[k] = metrics_accum.get(k, 0) + v
+            # Slice large batch into micro-batches
+            for i_micro in range(learner.num_micro_batches):
+                start = i_micro * learner.sgd_batch_size
+                end = start + learner.sgd_batch_size
+                micro_batch = slice_batch(large_batch, start, end)
+
+                # 2. Update
+                metrics = learner.update(micro_batch, step)
+                
+                for k, v in metrics.items():
+                    if isinstance(v, (int, float, jnp.ndarray)):
+                        metrics_accum[k] = metrics_accum.get(k, 0) + v
 
         end_time = time.time()
 
         # Average metrics
-        metrics = {k: v / config.accumulation_steps for k, v in metrics_accum.items()}
+        total_updates = config.accumulation_steps * learner.num_micro_batches
+        metrics = {k: v / total_updates for k, v in metrics_accum.items()}
 
         # Calculate SPS
         # metrics['mean_episode_length'] is already averaged.
-        # Total samples = mean_len * batch_size * num_buffers * accumulation_steps
-        total_samples = metrics.get('mean_episode_length', 0) * config.batch_size * config.num_buffers * config.accumulation_steps
+        # Total samples = mean_len * batch_size * accumulation_steps
+        # batch_size here is the simulation batch size.
+        total_samples = metrics.get('mean_episode_length', 0) * config.batch_size * config.accumulation_steps
         step_time = end_time - start_time
         sps = total_samples / (step_time + 1e-6)
         metrics['sps'] = sps

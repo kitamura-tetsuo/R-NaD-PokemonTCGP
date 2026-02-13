@@ -64,6 +64,7 @@ def objective(trial: optuna.Trial, args: argparse.Namespace):
         # Scaling settings from CLI
         batch_size=args.batch_size,
         accumulation_steps=args.accumulation_steps,
+        update_batch_size=args.update_batch_size,
         num_workers=args.num_workers,
         
         # Reward settings from CLI
@@ -124,6 +125,7 @@ def main():
     # Fixed parameters (not optimized but configurable)
     parser.add_argument("--batch_size", type=int, default=128 if HAS_TPU else 1)
     parser.add_argument("--accumulation_steps", type=int, default=8)
+    parser.add_argument("--update_batch_size", type=int, default=None, help="Batch size for gradient updates (None means same as batch_size)")
     parser.add_argument("--num_workers", type=int, default=32 if HAS_TPU else 8)
     parser.add_argument("--test_games", type=int, default=32 if HAS_TPU else 4)
     parser.add_argument("--win_reward", type=float, default=1.0)
@@ -180,7 +182,7 @@ def main():
         })
     
     logging.info(f"Starting HPO (Study: {args.study_name}, TPU: {HAS_TPU})...")
-    logging.info(f"Fixed params: batch_size={args.batch_size}, accumulation={args.accumulation_steps}, workers={args.num_workers}")
+    logging.info(f"Fixed params: batch_size={args.batch_size}, update_batch_size={args.update_batch_size}, accumulation={args.accumulation_steps}, workers={args.num_workers}")
     logging.info(f"Output directory: {args.output_dir}")
     
     study.optimize(lambda trial: objective(trial, args), n_trials=args.n_trials)
