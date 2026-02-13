@@ -53,8 +53,19 @@ class ExperimentManager:
             if key in params:
                 mlflow.set_tag(key, str(params[key]))
 
-        # Filter params
-        filtered_params = {k: v for k, v in params.items() if k not in exclude_from_params}
+        # Filter params and ensure values are loggable (int, float, string, bool)
+        filtered_params = {}
+        for k, v in params.items():
+            if k in exclude_from_params:
+                continue
+            
+            # Explicitly ensure transformer parameters and others are logged correctly
+            # MLflow log_params accepts string, int, float
+            if isinstance(v, (int, float, str, bool)) or v is None:
+                filtered_params[k] = v
+            else:
+                # Convert complex objects (like LeagueConfig) to string to avoid MLflow errors
+                filtered_params[k] = str(v)
         
         if filtered_params:
             mlflow.log_params(filtered_params)
