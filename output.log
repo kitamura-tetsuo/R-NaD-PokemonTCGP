@@ -1,0 +1,766 @@
+2026-02-13 05:14:42,950 - WARNING - deckgym_openspiel not found. Assuming environment is available via pyspiel.
+INFO:2026-02-13 05:14:43,287:jax._src.xla_bridge:834: Unable to initialize backend 'tpu': INTERNAL: Failed to open libtpu.so: libtpu.so: cannot open shared object file: No such file or directory
+2026-02-13 05:14:43,287 - INFO - Unable to initialize backend 'tpu': INTERNAL: Failed to open libtpu.so: libtpu.so: cannot open shared object file: No such file or directory
+[I 2026-02-13 05:14:43,822] Using an existing study with name 'rnad_hpo_tiny' instead of creating a new one.
+2026-02-13 05:14:43,848 - INFO - Starting HPO (Study: rnad_hpo_tiny, TPU: False)...
+2026-02-13 05:14:43,848 - INFO - Fixed params: batch_size=1, update_batch_size=None, accumulation=8, workers=8
+2026-02-13 05:14:43,849 - INFO - Output directory: .
+2026-02-13 05:14:43,851 - INFO - Target finished trials: 1, Current truly complete: 0. Running 1 more...
+2026-02-13 05:14:44,029 - INFO - Non-TPU environment detected. Using tiny transformer parameters for testing.
+2026-02-13 05:14:44,045 - INFO - Starting throughput tuning for base batch_size=1...
+2026-02-13 05:14:44,045 - INFO - Testing batch_size=1...
+OpenSpiel exception: Unknown game 'deckgym_ptcgp'. Available games are:
+2048
+add_noise
+amazons
+antichess
+backgammon
+bargaining
+battleship
+blackjack
+blotto
+breakthrough
+bridge
+bridge_uncontested_bidding
+cached_tree
+catch
+checkers
+chess
+cliff_walking
+clobber
+coin_game
+colored_trails
+connect_four
+coop_box_pushing
+coop_to_1p
+coordinated_mp
+crazy_eights
+cribbage
+cursor_go
+dark_chess
+dark_hex
+dark_hex_ir
+deep_sea
+dots_and_boxes
+dou_dizhu
+efg_game
+einstein_wurfelt_nicht
+euchre
+first_sealed_auction
+gin_rummy
+go
+goofspiel
+hanabi
+havannah
+hearts
+hex
+hive
+kriegspiel
+kuhn_poker
+laser_tag
+latent_ttt
+leduc_poker
+lewis_signaling
+liars_dice
+liars_dice_ir
+lines_of_action
+maedn
+mancala
+markov_soccer
+matching_pennies_3p
+matrix_bos
+matrix_brps
+matrix_cd
+matrix_coordination
+matrix_mp
+matrix_pd
+matrix_rps
+matrix_rpsw
+matrix_sh
+matrix_shapleys_game
+mfg_crowd_modelling
+mfg_crowd_modelling_2d
+mfg_dynamic_routing
+mfg_garnet
+misere
+mnk
+morpion_solitaire
+negotiation
+nfg_game
+nim
+nine_mens_morris
+normal_form_extensive_game
+oh_hell
+oshi_zumo
+othello
+oware
+pathfinding
+pentago
+phantom_go
+phantom_ttt
+phantom_ttt_ir
+pig
+quoridor
+rbc
+repeated_game
+repeated_leduc_poker
+repeated_poker
+restricted_nash_response
+sheriff
+skat
+solitaire
+spades
+start_at
+stones_and_gems
+tarok
+tic_tac_toe
+tiny_bridge_2p
+tiny_bridge_4p
+tiny_hanabi
+trade_comm
+turn_based_simultaneous_game
+twixt
+ultimate_tic_tac_toe
+universal_poker
+y
+zerosum
+2026-02-13 05:14:44,179 - WARNING - Batch size 1 failed: Unknown game 'deckgym_ptcgp'. Available games are:
+2048
+add_noise
+amazons
+antichess
+backgammon
+bargaining
+battleship
+blackjack
+blotto
+breakthrough
+bridge
+bridge_uncontested_bidding
+cached_tree
+catch
+checkers
+chess
+cliff_walking
+clobber
+coin_game
+colored_trails
+connect_four
+coop_box_pushing
+coop_to_1p
+coordinated_mp
+crazy_eights
+cribbage
+cursor_go
+dark_chess
+dark_hex
+dark_hex_ir
+deep_sea
+dots_and_boxes
+dou_dizhu
+efg_game
+einstein_wurfelt_nicht
+euchre
+first_sealed_auction
+gin_rummy
+go
+goofspiel
+hanabi
+havannah
+hearts
+hex
+hive
+kriegspiel
+kuhn_poker
+laser_tag
+latent_ttt
+leduc_poker
+lewis_signaling
+liars_dice
+liars_dice_ir
+lines_of_action
+maedn
+mancala
+markov_soccer
+matching_pennies_3p
+matrix_bos
+matrix_brps
+matrix_cd
+matrix_coordination
+matrix_mp
+matrix_pd
+matrix_rps
+matrix_rpsw
+matrix_sh
+matrix_shapleys_game
+mfg_crowd_modelling
+mfg_crowd_modelling_2d
+mfg_dynamic_routing
+mfg_garnet
+misere
+mnk
+morpion_solitaire
+negotiation
+nfg_game
+nim
+nine_mens_morris
+normal_form_extensive_game
+oh_hell
+oshi_zumo
+othello
+oware
+pathfinding
+pentago
+phantom_go
+phantom_ttt
+phantom_ttt_ir
+pig
+quoridor
+rbc
+repeated_game
+repeated_leduc_poker
+repeated_poker
+restricted_nash_response
+sheriff
+skat
+solitaire
+spades
+start_at
+stones_and_gems
+tarok
+tic_tac_toe
+tiny_bridge_2p
+tiny_bridge_4p
+tiny_hanabi
+trade_comm
+turn_based_simultaneous_game
+twixt
+ultimate_tic_tac_toe
+universal_poker
+y
+zerosum. Stopping increase.
+2026-02-13 05:14:44,179 - INFO - Throughput tuning complete. Best batch_size=1 (SPS=0.00)
+2026-02-13 05:14:44,617 - INFO - orbax-checkpoint version: 0.11.32
+2026-02-13 05:14:44,617 - INFO - save_device_host_concurrent_bytes=None
+2026-02-13 05:14:44,617 - INFO - Created BasePyTreeCheckpointHandler: use_ocdbt=True, use_zarr3=False, pytree_metadata_options=PyTreeMetadataOptions(support_rich_types=False), array_metadata_store=<orbax.checkpoint._src.metadata.array_metadata_store.Store object at 0x7ff7a3033bc0>, enable_pinned_host_transfer=False, save_concurrent_bytes: 96000000000 (89.4 GiB), restore_concurrent_bytes: 96000000000 (89.4 GiB)
+2026-02-13 05:14:44,618 - INFO - [thread=MainThread] Failed to get flag value for EXPERIMENTAL_ORBAX_USE_DISTRIBUTED_PROCESS_ID.
+2026-02-13 05:14:44,618 - INFO - [process=0][thread=MainThread] Using barrier_sync_fn: <function get_barrier_sync_fn.<locals>.<lambda> at 0x7ff77dab3ce0> timeout: 600 secs and primary_host=0 for async checkpoint writes
+2026-02-13 05:14:44,618 - INFO - [process=0][thread=MainThread] CheckpointManager init: checkpointers=<orbax.checkpoint._src.checkpointers.standard_checkpointer.StandardCheckpointer object at 0x7ff77f587d10>, item_names=None, item_handlers=None, handler_registry=None
+2026-02-13 05:14:44,618 - WARNING - Configured `CheckpointManager` using deprecated legacy API. Please follow the instructions at https://orbax.readthedocs.io/en/latest/guides/checkpoint/api_refactor.html to migrate.
+2026-02-13 05:14:44,618 - INFO - Deferred registration for item: "default". Adding handler `<orbax.checkpoint._src.handlers.standard_checkpoint_handler.StandardCheckpointHandler object at 0x7ff77db346b0>` for item "default" and save args `<class 'orbax.checkpoint._src.handlers.standard_checkpoint_handler.StandardSaveArgs'>` and restore args `<class 'orbax.checkpoint._src.handlers.standard_checkpoint_handler.StandardRestoreArgs'>` to `_handler_registry`.
+2026-02-13 05:14:44,619 - INFO - Deferred registration for item: "metrics". Adding handler `<orbax.checkpoint._src.handlers.json_checkpoint_handler.JsonCheckpointHandler object at 0x7ff77d8d5a30>` for item "metrics" and save args `<class 'orbax.checkpoint._src.handlers.json_checkpoint_handler.JsonSaveArgs'>` and restore args `<class 'orbax.checkpoint._src.handlers.json_checkpoint_handler.JsonRestoreArgs'>` to `_handler_registry`.
+2026-02-13 05:14:44,619 - INFO - Initialized registry DefaultCheckpointHandlerRegistry({('default', <class 'orbax.checkpoint._src.handlers.standard_checkpoint_handler.StandardSaveArgs'>): <orbax.checkpoint._src.handlers.standard_checkpoint_handler.StandardCheckpointHandler object at 0x7ff77db346b0>, ('default', <class 'orbax.checkpoint._src.handlers.standard_checkpoint_handler.StandardRestoreArgs'>): <orbax.checkpoint._src.handlers.standard_checkpoint_handler.StandardCheckpointHandler object at 0x7ff77db346b0>, ('metrics', <class 'orbax.checkpoint._src.handlers.json_checkpoint_handler.JsonSaveArgs'>): <orbax.checkpoint._src.handlers.json_checkpoint_handler.JsonCheckpointHandler object at 0x7ff77d8d5a30>, ('metrics', <class 'orbax.checkpoint._src.handlers.json_checkpoint_handler.JsonRestoreArgs'>): <orbax.checkpoint._src.handlers.json_checkpoint_handler.JsonCheckpointHandler object at 0x7ff77d8d5a30>}).
+2026-02-13 05:14:44,621 - INFO - [process=0][thread=MainThread] Using barrier_sync_fn: <function get_barrier_sync_fn.<locals>.<lambda> at 0x7ff77dd68ae0> timeout: 600 secs and primary_host=0 for async checkpoint writes
+2026-02-13 05:14:44,624 - INFO - Created directory=/app/checkpoints/886483766e334428b49f5918ecc86410
+2026-02-13 05:14:44,626 - INFO - Found 0 checkpoint steps in /app/checkpoints/886483766e334428b49f5918ecc86410
+2026-02-13 05:14:44,626 - INFO - [process=0][thread=MainThread] CheckpointManager created,  primary_host=0, CheckpointManagerOptions=CheckpointManagerOptions(save_interval_steps=1, max_to_keep=5, keep_time_interval=None, keep_period=None, should_keep_fn=None, best_fn=None, best_mode='max', keep_checkpoints_without_metrics=True, step_prefix=None, step_format_fixed_length=None, step_name_format=None, create=True, cleanup_tmp_directories=False, save_on_steps=frozenset(), single_host_load_and_broadcast=False, todelete_subdir=None, todelete_full_path=None, enable_background_delete=False, read_only=False, enable_async_checkpointing=True, async_options=AsyncOptions(timeout_secs=600, barrier_sync_fn=None, post_finalization_callback=None, create_directories_asynchronously=True), multiprocessing_options=MultiprocessingOptions(primary_host=0, active_processes=None, barrier_sync_key_prefix=None), should_save_fn=None, file_options=FileOptions(path_permission_mode=None), save_root_metadata=True, temporary_path_class=None, save_decision_policy=None, preservation_policy=None, prevent_write_metrics=False, enable_should_save_is_saving_in_progress_check=True, enable_per_process_directory_creation=False, lightweight_initialize=False), root_directory=/app/checkpoints/886483766e334428b49f5918ecc86410: <orbax.checkpoint.checkpoint_manager.CheckpointManager object at 0x7ff77d8d55b0>
+2026-02-13 05:14:44,626 - INFO - Initialized ExperimentManager with checkpoint dir: /app/checkpoints/886483766e334428b49f5918ecc86410
+OpenSpiel exception: Unknown game 'deckgym_ptcgp'. Available games are:
+2048
+add_noise
+amazons
+antichess
+backgammon
+bargaining
+battleship
+blackjack
+blotto
+breakthrough
+bridge
+bridge_uncontested_bidding
+cached_tree
+catch
+checkers
+chess
+cliff_walking
+clobber
+coin_game
+colored_trails
+connect_four
+coop_box_pushing
+coop_to_1p
+coordinated_mp
+crazy_eights
+cribbage
+cursor_go
+dark_chess
+dark_hex
+dark_hex_ir
+deep_sea
+dots_and_boxes
+dou_dizhu
+efg_game
+einstein_wurfelt_nicht
+euchre
+first_sealed_auction
+gin_rummy
+go
+goofspiel
+hanabi
+havannah
+hearts
+hex
+hive
+kriegspiel
+kuhn_poker
+laser_tag
+latent_ttt
+leduc_poker
+lewis_signaling
+liars_dice
+liars_dice_ir
+lines_of_action
+maedn
+mancala
+markov_soccer
+matching_pennies_3p
+matrix_bos
+matrix_brps
+matrix_cd
+matrix_coordination
+matrix_mp
+matrix_pd
+matrix_rps
+matrix_rpsw
+matrix_sh
+matrix_shapleys_game
+mfg_crowd_modelling
+mfg_crowd_modelling_2d
+mfg_dynamic_routing
+mfg_garnet
+misere
+mnk
+morpion_solitaire
+negotiation
+nfg_game
+nim
+nine_mens_morris
+normal_form_extensive_game
+oh_hell
+oshi_zumo
+othello
+oware
+pathfinding
+pentago
+phantom_go
+phantom_ttt
+phantom_ttt_ir
+pig
+quoridor
+rbc
+repeated_game
+repeated_leduc_poker
+repeated_poker
+restricted_nash_response
+sheriff
+skat
+solitaire
+spades
+start_at
+stones_and_gems
+tarok
+tic_tac_toe
+tiny_bridge_2p
+tiny_bridge_4p
+tiny_hanabi
+trade_comm
+turn_based_simultaneous_game
+twixt
+ultimate_tic_tac_toe
+universal_poker
+y
+zerosum
+2026-02-13 05:14:44,665 - ERROR - Trial 2 failed: Unknown game 'deckgym_ptcgp'. Available games are:
+2048
+add_noise
+amazons
+antichess
+backgammon
+bargaining
+battleship
+blackjack
+blotto
+breakthrough
+bridge
+bridge_uncontested_bidding
+cached_tree
+catch
+checkers
+chess
+cliff_walking
+clobber
+coin_game
+colored_trails
+connect_four
+coop_box_pushing
+coop_to_1p
+coordinated_mp
+crazy_eights
+cribbage
+cursor_go
+dark_chess
+dark_hex
+dark_hex_ir
+deep_sea
+dots_and_boxes
+dou_dizhu
+efg_game
+einstein_wurfelt_nicht
+euchre
+first_sealed_auction
+gin_rummy
+go
+goofspiel
+hanabi
+havannah
+hearts
+hex
+hive
+kriegspiel
+kuhn_poker
+laser_tag
+latent_ttt
+leduc_poker
+lewis_signaling
+liars_dice
+liars_dice_ir
+lines_of_action
+maedn
+mancala
+markov_soccer
+matching_pennies_3p
+matrix_bos
+matrix_brps
+matrix_cd
+matrix_coordination
+matrix_mp
+matrix_pd
+matrix_rps
+matrix_rpsw
+matrix_sh
+matrix_shapleys_game
+mfg_crowd_modelling
+mfg_crowd_modelling_2d
+mfg_dynamic_routing
+mfg_garnet
+misere
+mnk
+morpion_solitaire
+negotiation
+nfg_game
+nim
+nine_mens_morris
+normal_form_extensive_game
+oh_hell
+oshi_zumo
+othello
+oware
+pathfinding
+pentago
+phantom_go
+phantom_ttt
+phantom_ttt_ir
+pig
+quoridor
+rbc
+repeated_game
+repeated_leduc_poker
+repeated_poker
+restricted_nash_response
+sheriff
+skat
+solitaire
+spades
+start_at
+stones_and_gems
+tarok
+tic_tac_toe
+tiny_bridge_2p
+tiny_bridge_4p
+tiny_hanabi
+trade_comm
+turn_based_simultaneous_game
+twixt
+ultimate_tic_tac_toe
+universal_poker
+y
+zerosum
+[W 2026-02-13 05:14:44,683] Trial 2 failed with parameters: {'learning_rate': 0.0009766036969366247, 'entropy_schedule_start': 0.38836415568429694, 'transformer_embed_dim': 16, 'transformer_layers': 12, 'transformer_heads': 8, 'transformer_seq_len': 32} because of the following error: SpielError("Unknown game 'deckgym_ptcgp'. Available games are:\n2048\nadd_noise\namazons\nantichess\nbackgammon\nbargaining\nbattleship\nblackjack\nblotto\nbreakthrough\nbridge\nbridge_uncontested_bidding\ncached_tree\ncatch\ncheckers\nchess\ncliff_walking\nclobber\ncoin_game\ncolored_trails\nconnect_four\ncoop_box_pushing\ncoop_to_1p\ncoordinated_mp\ncrazy_eights\ncribbage\ncursor_go\ndark_chess\ndark_hex\ndark_hex_ir\ndeep_sea\ndots_and_boxes\ndou_dizhu\nefg_game\neinstein_wurfelt_nicht\neuchre\nfirst_sealed_auction\ngin_rummy\ngo\ngoofspiel\nhanabi\nhavannah\nhearts\nhex\nhive\nkriegspiel\nkuhn_poker\nlaser_tag\nlatent_ttt\nleduc_poker\nlewis_signaling\nliars_dice\nliars_dice_ir\nlines_of_action\nmaedn\nmancala\nmarkov_soccer\nmatching_pennies_3p\nmatrix_bos\nmatrix_brps\nmatrix_cd\nmatrix_coordination\nmatrix_mp\nmatrix_pd\nmatrix_rps\nmatrix_rpsw\nmatrix_sh\nmatrix_shapleys_game\nmfg_crowd_modelling\nmfg_crowd_modelling_2d\nmfg_dynamic_routing\nmfg_garnet\nmisere\nmnk\nmorpion_solitaire\nnegotiation\nnfg_game\nnim\nnine_mens_morris\nnormal_form_extensive_game\noh_hell\noshi_zumo\nothello\noware\npathfinding\npentago\nphantom_go\nphantom_ttt\nphantom_ttt_ir\npig\nquoridor\nrbc\nrepeated_game\nrepeated_leduc_poker\nrepeated_poker\nrestricted_nash_response\nsheriff\nskat\nsolitaire\nspades\nstart_at\nstones_and_gems\ntarok\ntic_tac_toe\ntiny_bridge_2p\ntiny_bridge_4p\ntiny_hanabi\ntrade_comm\nturn_based_simultaneous_game\ntwixt\nultimate_tic_tac_toe\nuniversal_poker\ny\nzerosum").
+Traceback (most recent call last):
+  File "/app/.venv/lib/python3.12/site-packages/optuna/study/_optimize.py", line 206, in _run_trial
+    value_or_values = func(trial)
+                      ^^^^^^^^^^^
+  File "/app/src/hpo_auto.py", line 364, in <lambda>
+    study.optimize(lambda trial: objective(trial, args), n_trials=n_remaining)
+                                 ^^^^^^^^^^^^^^^^^^^^^^
+  File "/app/src/hpo_auto.py", line 233, in objective
+    raise e
+  File "/app/src/hpo_auto.py", line 220, in objective
+    train_loop(
+  File "/app/src/rnad.py", line 948, in train_loop
+    learner = RNaDLearner("deckgym_ptcgp", config)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/app/src/rnad.py", line 344, in __init__
+    self.game = pyspiel.load_game(
+                ^^^^^^^^^^^^^^^^^^
+pyspiel.SpielError: Unknown game 'deckgym_ptcgp'. Available games are:
+2048
+add_noise
+amazons
+antichess
+backgammon
+bargaining
+battleship
+blackjack
+blotto
+breakthrough
+bridge
+bridge_uncontested_bidding
+cached_tree
+catch
+checkers
+chess
+cliff_walking
+clobber
+coin_game
+colored_trails
+connect_four
+coop_box_pushing
+coop_to_1p
+coordinated_mp
+crazy_eights
+cribbage
+cursor_go
+dark_chess
+dark_hex
+dark_hex_ir
+deep_sea
+dots_and_boxes
+dou_dizhu
+efg_game
+einstein_wurfelt_nicht
+euchre
+first_sealed_auction
+gin_rummy
+go
+goofspiel
+hanabi
+havannah
+hearts
+hex
+hive
+kriegspiel
+kuhn_poker
+laser_tag
+latent_ttt
+leduc_poker
+lewis_signaling
+liars_dice
+liars_dice_ir
+lines_of_action
+maedn
+mancala
+markov_soccer
+matching_pennies_3p
+matrix_bos
+matrix_brps
+matrix_cd
+matrix_coordination
+matrix_mp
+matrix_pd
+matrix_rps
+matrix_rpsw
+matrix_sh
+matrix_shapleys_game
+mfg_crowd_modelling
+mfg_crowd_modelling_2d
+mfg_dynamic_routing
+mfg_garnet
+misere
+mnk
+morpion_solitaire
+negotiation
+nfg_game
+nim
+nine_mens_morris
+normal_form_extensive_game
+oh_hell
+oshi_zumo
+othello
+oware
+pathfinding
+pentago
+phantom_go
+phantom_ttt
+phantom_ttt_ir
+pig
+quoridor
+rbc
+repeated_game
+repeated_leduc_poker
+repeated_poker
+restricted_nash_response
+sheriff
+skat
+solitaire
+spades
+start_at
+stones_and_gems
+tarok
+tic_tac_toe
+tiny_bridge_2p
+tiny_bridge_4p
+tiny_hanabi
+trade_comm
+turn_based_simultaneous_game
+twixt
+ultimate_tic_tac_toe
+universal_poker
+y
+zerosum
+[W 2026-02-13 05:14:44,685] Trial 2 failed with value None.
+Traceback (most recent call last):
+  File "/app/src/hpo_auto.py", line 380, in <module>
+    main()
+  File "/app/src/hpo_auto.py", line 364, in main
+    study.optimize(lambda trial: objective(trial, args), n_trials=n_remaining)
+  File "/app/.venv/lib/python3.12/site-packages/optuna/study/study.py", line 490, in optimize
+    _optimize(
+  File "/app/.venv/lib/python3.12/site-packages/optuna/study/_optimize.py", line 68, in _optimize
+    _optimize_sequential(
+  File "/app/.venv/lib/python3.12/site-packages/optuna/study/_optimize.py", line 165, in _optimize_sequential
+    frozen_trial_id = _run_trial(study, func, catch)
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/app/.venv/lib/python3.12/site-packages/optuna/study/_optimize.py", line 263, in _run_trial
+    raise func_err
+  File "/app/.venv/lib/python3.12/site-packages/optuna/study/_optimize.py", line 206, in _run_trial
+    value_or_values = func(trial)
+                      ^^^^^^^^^^^
+  File "/app/src/hpo_auto.py", line 364, in <lambda>
+    study.optimize(lambda trial: objective(trial, args), n_trials=n_remaining)
+                                 ^^^^^^^^^^^^^^^^^^^^^^
+  File "/app/src/hpo_auto.py", line 233, in objective
+    raise e
+  File "/app/src/hpo_auto.py", line 220, in objective
+    train_loop(
+  File "/app/src/rnad.py", line 948, in train_loop
+    learner = RNaDLearner("deckgym_ptcgp", config)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/app/src/rnad.py", line 344, in __init__
+    self.game = pyspiel.load_game(
+                ^^^^^^^^^^^^^^^^^^
+pyspiel.SpielError: Unknown game 'deckgym_ptcgp'. Available games are:
+2048
+add_noise
+amazons
+antichess
+backgammon
+bargaining
+battleship
+blackjack
+blotto
+breakthrough
+bridge
+bridge_uncontested_bidding
+cached_tree
+catch
+checkers
+chess
+cliff_walking
+clobber
+coin_game
+colored_trails
+connect_four
+coop_box_pushing
+coop_to_1p
+coordinated_mp
+crazy_eights
+cribbage
+cursor_go
+dark_chess
+dark_hex
+dark_hex_ir
+deep_sea
+dots_and_boxes
+dou_dizhu
+efg_game
+einstein_wurfelt_nicht
+euchre
+first_sealed_auction
+gin_rummy
+go
+goofspiel
+hanabi
+havannah
+hearts
+hex
+hive
+kriegspiel
+kuhn_poker
+laser_tag
+latent_ttt
+leduc_poker
+lewis_signaling
+liars_dice
+liars_dice_ir
+lines_of_action
+maedn
+mancala
+markov_soccer
+matching_pennies_3p
+matrix_bos
+matrix_brps
+matrix_cd
+matrix_coordination
+matrix_mp
+matrix_pd
+matrix_rps
+matrix_rpsw
+matrix_sh
+matrix_shapleys_game
+mfg_crowd_modelling
+mfg_crowd_modelling_2d
+mfg_dynamic_routing
+mfg_garnet
+misere
+mnk
+morpion_solitaire
+negotiation
+nfg_game
+nim
+nine_mens_morris
+normal_form_extensive_game
+oh_hell
+oshi_zumo
+othello
+oware
+pathfinding
+pentago
+phantom_go
+phantom_ttt
+phantom_ttt_ir
+pig
+quoridor
+rbc
+repeated_game
+repeated_leduc_poker
+repeated_poker
+restricted_nash_response
+sheriff
+skat
+solitaire
+spades
+start_at
+stones_and_gems
+tarok
+tic_tac_toe
+tiny_bridge_2p
+tiny_bridge_4p
+tiny_hanabi
+trade_comm
+turn_based_simultaneous_game
+twixt
+ultimate_tic_tac_toe
+universal_poker
+y
+zerosum
