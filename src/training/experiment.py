@@ -45,7 +45,7 @@ class ExperimentManager:
                 params = {"config": str(config)}
 
         # Define keys to exclude from parameters and which ones should be tags
-        exclude_from_params = ["batch_size", "max_steps", "deck_id_1", "deck_id_2", "log_interval", "save_interval"]
+        exclude_from_params = ["batch_size", "max_steps", "deck_id_1", "deck_id_2", "log_interval", "save_interval", "league_config", "accumulation_steps", "damage_reward", "enable_profiler", "model_type", "num_buffers", "num_workers", "past_self_play", "point_reward", "profile_num_steps", "profile_start_step", "profiler_dir", "runs/profile", "seed", "test_games", "test_interval", "timeout_reward", "transformer", "tuned_batch_size", "tuned_num_workers", "tuned_update_batch_size", "update_batch_size", "win_reward", ]
         save_as_tags = ["batch_size", "max_steps", "log_interval", "save_interval"]
 
         # Set tags
