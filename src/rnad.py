@@ -1063,8 +1063,7 @@ def train_loop(config: RNaDConfig, experiment_manager: Optional[Any] = None, che
         end_time = time.time()
 
         # Average metrics
-        total_updates = config.accumulation_steps * learner.num_micro_batches
-        metrics = {k: v / total_updates for k, v in metrics_accum.items()}
+        metrics = {k: v / num_updates for k, v in metrics_accum.items()}
 
         # Calculate SPS
         # metrics['mean_episode_length'] is already averaged.
