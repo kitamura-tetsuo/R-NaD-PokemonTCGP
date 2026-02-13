@@ -20,8 +20,8 @@ logging.basicConfig(
 def make_objective(args):
     def objective(trial):
         # 1. Suggest parameters
-        batch_size = trial.suggest_categorical("batch_size", [64, 128, 256, 512, 1024, 2048])
-        num_workers = trial.suggest_categorical("num_workers", [2, 4, 8, 16, 32])
+        batch_size = trial.suggest_categorical("batch_size", [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048])
+        num_workers = trial.suggest_categorical("num_workers", [1, 2, 4, 8, 16, 32])
 
         # 2. Prepare command
         # Find train.py path
@@ -146,6 +146,13 @@ def main():
         storage=args.storage,
         load_if_exists=True
     )
+
+    # Handle "zombie" trials from previous interrupted runs (e.g., system OOM crash)
+    # Any trial left in RUNNING state is considered to have caused the crash.
+    for trial in study.get_trials(deepcopy=False, states=(optuna.trial.TrialState.RUNNING,)):
+        logging.warning(f"Trial {trial.number} was found in RUNNING state at startup. "
+                        f"Assuming it caused a system crash/OOM and marking as FAIL.")
+        study.tell(trial.number, state=optuna.trial.TrialState.FAIL)
     
     # Run optimization
     logging.info(f"Starting/Resuming study '{args.study_name}' using storage '{args.storage}'")
