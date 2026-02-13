@@ -20,7 +20,7 @@ logging.basicConfig(
 def make_objective(args):
     def objective(trial):
         # 1. Suggest parameters
-        batch_size = trial.suggest_categorical("batch_size", [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048])
+        batch_size = trial.suggest_categorical("batch_size", [1, 2, 4, 8, 16, 32, 64])
         num_workers = trial.suggest_categorical("num_workers", [1, 2, 4, 8, 16, 32])
 
         # 2. Prepare command

@@ -388,17 +388,16 @@ class RNaDLearner:
         # Determine SGD batch size and micro-batching
         self.sgd_batch_size = config.update_batch_size or config.batch_size
         
-        total_bs = config.batch_size * config.accumulation_steps
-        if self.sgd_batch_size > total_bs:
-            logging.warning(f"update_batch_size ({self.sgd_batch_size}) is larger than total_bs ({total_bs}). Reducing sgd_batch_size to {total_bs}.")
-            self.sgd_batch_size = total_bs
+        if self.sgd_batch_size > config.batch_size:
+            raise ValueError(f"update_batch_size ({self.sgd_batch_size}) cannot be larger than batch_size ({config.batch_size}). "
+                             "Micro-batching is intended to use smaller batches for updates to save memory.")
 
-        if total_bs % self.sgd_batch_size != 0:
-            logging.warning(f"total_bs ({total_bs}) is not divisible by update_batch_size ({self.sgd_batch_size}). "
-                           f"The last {total_bs % self.sgd_batch_size} samples will be ignored.")
+        if config.batch_size % self.sgd_batch_size != 0:
+            raise ValueError(f"batch_size ({config.batch_size}) must be divisible by update_batch_size ({self.sgd_batch_size}).")
 
-        total_accumulation_steps = total_bs // self.sgd_batch_size
-        logging.info(f"Using sgd_batch_size: {self.sgd_batch_size}, total_accumulation_steps: {total_accumulation_steps}")
+        self.num_micro_batches = config.batch_size // self.sgd_batch_size
+        total_accumulation_steps = (config.batch_size * config.accumulation_steps) // self.sgd_batch_size
+        logging.info(f"Using sgd_batch_size: {self.sgd_batch_size}, num_micro_batches_per_batch: {self.num_micro_batches}, total_accumulation_steps: {total_accumulation_steps}")
 
         base_optimizer = optax.adam(learning_rate=config.learning_rate)
         if total_accumulation_steps > 1:
@@ -480,8 +479,8 @@ class RNaDLearner:
             'total_loss': total_loss,
             'policy_loss': p_loss,
             'value_loss': v_loss,
-            'policy_entropy': ent,
-            'approx_kl': kl,
+            'mean_entropy': ent,
+            'mean_kl': kl,
             'explained_variance': ev
         }
 
@@ -701,12 +700,12 @@ class RNaDLearner:
         ties = np.sum(sb['episode_outcomes'] == 0)
         
         batch_out = {
-            'obs': jnp.array(tb['obs_buf']),
-            'mask': jnp.array(tb['mask_buf']),
-            'act': jnp.array(tb['act_buf']),
-            'rew': jnp.array(tb['rew_buf']),
-            'log_prob': jnp.array(tb['log_prob_buf']),
-            'bootstrap_value': jnp.array(merged_bootstrap),
+            'obs': np.array(tb['obs_buf']),
+            'mask': np.array(tb['mask_buf']),
+            'act': np.array(tb['act_buf']),
+            'rew': np.array(tb['rew_buf']),
+            'log_prob': np.array(tb['log_prob_buf']),
+            'bootstrap_value': np.array(merged_bootstrap),
             'stats': {
                 'mean_episode_length': np.mean(sb['episode_lengths']),
                 'max_episode_length': np.max(sb['episode_lengths']),
@@ -732,25 +731,6 @@ def slice_batch(batch: Dict[str, Any], start: int, end: int) -> Dict[str, Any]:
             sliced[k] = v
     return sliced
 
-def merge_batches(batches: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """Merges multiple trajectory batches into one larger batch."""
-    if not batches:
-        return {}
-    if len(batches) == 1:
-        return batches[0]
-        
-    merged = {}
-    for k in batches[0].keys():
-        if k == 'stats':
-            merged[k] = batches[0][k] # Just take first one or average them?
-        elif k == 'bootstrap_value':
-            merged[k] = jnp.concatenate([b[k] for b in batches], axis=0)
-        elif isinstance(batches[0][k], (jnp.ndarray, np.ndarray)):
-            # T, B, ... -> concatenate at dim 1
-            merged[k] = jnp.concatenate([b[k] for b in batches], axis=1)
-        else:
-            merged[k] = batches[0][k]
-    return merged
 import queue
 import threading
 
@@ -1051,28 +1031,25 @@ def train_loop(config: RNaDConfig, experiment_manager: Optional[Any] = None, che
         metrics_accum = {}
         start_time = time.time()
 
-        batches_to_merge = []
+        num_updates_done = 0
         for i_acc in range(config.accumulation_steps):
             # 1. Get batch from background generator
-            large_batch = generator.get_batch()
-            batches_to_merge.append(large_batch)
+            batch = generator.get_batch()
             
-        # Merge all collected batches
-        full_batch = merge_batches(batches_to_merge)
-        total_bs = config.batch_size * config.accumulation_steps
-        num_updates = total_bs // learner.sgd_batch_size
+            # 2. Update in micro-batches
+            for i_micro in range(learner.num_micro_batches):
+                start = i_micro * learner.sgd_batch_size
+                end = start + learner.sgd_batch_size
+                micro_batch = slice_batch(batch, start, end)
 
-        for i_update in range(num_updates):
-            start = i_update * learner.sgd_batch_size
-            end = start + learner.sgd_batch_size
-            micro_batch = slice_batch(full_batch, start, end)
-
-            # 2. Update
-            metrics = learner.update(micro_batch, step)
-            
-            for k, v in metrics.items():
-                if isinstance(v, (int, float, jnp.ndarray)):
-                    metrics_accum[k] = metrics_accum.get(k, 0) + v
+                metrics = learner.update(micro_batch, step)
+                
+                for k, v in metrics.items():
+                    if isinstance(v, (int, float, jnp.ndarray)):
+                        metrics_accum[k] = metrics_accum.get(k, 0) + v
+                num_updates_done += 1
+        
+        num_updates = num_updates_done or 1
 
         end_time = time.time()
 
