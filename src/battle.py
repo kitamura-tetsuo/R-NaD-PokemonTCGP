@@ -13,7 +13,7 @@ import deckgym
 import deckgym_openspiel
 import pickle
 import jax.numpy as jnp
-from src.rnad import RNaDConfig
+from src.rnad import RNaDConfig, find_latest_checkpoint
 from src.models import DeckGymNet, TransformerNet, CardTransformerNet
 
 # Configure logging
@@ -502,7 +502,19 @@ def main():
     params = None
     jit_apply = None
 
-    if args.checkpoint and os.path.exists(args.checkpoint) and os.path.isdir(args.checkpoint):
+    checkpoint_path = args.checkpoint
+    is_saved_model = False
+
+    if checkpoint_path and os.path.exists(checkpoint_path) and os.path.isdir(checkpoint_path):
+        # Check if directory contains JAX checkpoints
+        latest_ckpt = find_latest_checkpoint(checkpoint_path)
+        if latest_ckpt:
+            logging.info(f"Found latest JAX checkpoint in directory: {latest_ckpt}")
+            checkpoint_path = latest_ckpt
+        else:
+            is_saved_model = True
+
+    if is_saved_model:
         # SavedModel Path
         logging.info(f"Loading SavedModel from: {args.checkpoint}")
         import tensorflow as tf
@@ -556,10 +568,10 @@ def main():
         dummy_obs = jnp.zeros((1, *obs_shape))
         params = network.init(rng, dummy_obs)
 
-        if args.checkpoint and os.path.exists(args.checkpoint):
-            logging.info(f"Loading checkpoint: {args.checkpoint}")
+        if checkpoint_path and os.path.exists(checkpoint_path):
+            logging.info(f"Loading checkpoint: {checkpoint_path}")
             try:
-                with open(args.checkpoint, 'rb') as f:
+                with open(checkpoint_path, 'rb') as f:
                     data = pickle.load(f)
                 
                 # Load params
