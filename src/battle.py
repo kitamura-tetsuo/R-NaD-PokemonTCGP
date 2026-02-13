@@ -104,7 +104,7 @@ def extract_state_info(rust_state):
                 "url": get_card_image_url(active.card.id),
                 "hp": active.remaining_hp,
                 "max_hp": active.total_hp,
-                "energy": str(active.attached_energy),
+                "energy": [e.name for e in active.attached_energy],
                 "tool": tool_info,
                 "status": []
             }
@@ -137,7 +137,7 @@ def extract_state_info(rust_state):
                 "url": get_card_image_url(mon.card.id),
                 "hp": mon.remaining_hp,
                 "max_hp": mon.total_hp,
-                "energy": str(mon.attached_energy),
+                "energy": [e.name for e in mon.attached_energy],
                 "tool": tool_info,
                 "status": [] # Bench usually has no status
             })
@@ -163,6 +163,34 @@ def generate_html(history, output_path):
     <title>DeckGym Battle Visualization</title>
     <style>
         body {{ font-family: sans-serif; background-color: #f0f0f0; margin: 0; padding: 20px; }}
+        @font-face {{
+            font-family: 'PTCG Symbols';
+            src: url('ptcg-symbols.woff'); /* Replace with valid URL */
+        }}
+        .ptcg-symbol {{
+            font-family: 'PTCG Symbols', sans-serif;
+            display: inline-block;
+            width: 1.2em;
+            text-align: center;
+            border-radius: 50%;
+            font-weight: bold;
+            color: white; /* Text color inside the symbol circle */
+            text-shadow: 1px 1px 1px black;
+            cursor: default;
+            margin-right: 2px;
+        }}
+        .type-grass {{ background-color: #78C850; }}
+        .type-fire {{ background-color: #F08030; }}
+        .type-water {{ background-color: #6890F0; }}
+        .type-lightning {{ background-color: #F8D030; color: black; text-shadow: none; }}
+        .type-psychic {{ background-color: #F85888; }}
+        .type-fighting {{ background-color: #C03028; }}
+        .type-darkness {{ background-color: #705848; }}
+        .type-metal {{ background-color: #B8B8D0; color: black; text-shadow: none; }}
+        .type-fairy {{ background-color: #EE99AC; color: black; text-shadow: none; }}
+        .type-dragon {{ background-color: #7038F8; }}
+        .type-colorless {{ background-color: #A8A878; color: black; text-shadow: none; }}
+
         .container {{ max_width: 1200px; margin: 0 auto; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 0 10px rgba(0,0,0,0.1); }}
         .controls {{ text-align: center; margin-bottom: 20px; }}
         button {{ padding: 10px 20px; font-size: 16px; cursor: pointer; }}
@@ -218,9 +246,25 @@ def generate_html(history, output_path):
         function renderCard(card, type="hand") {{
             if (!card) return '<div class="card-container" style="border: 1px dashed #ccc; height: 70px;"></div>';
 
+            const energyMap = {{
+                'Grass': 'G', 'Fire': 'R', 'Water': 'W', 'Lightning': 'L',
+                'Psychic': 'P', 'Fighting': 'F', 'Darkness': 'D',
+                'Metal': 'M', 'Dragon': 'N', 'Colorless': 'C', 'Fairy': 'Y'
+            }};
+
             let statsHtml = '';
             if (type === 'active' || type === 'bench') {{
-                statsHtml = `<div class="card-stats">HP: ${{card.hp}}/${{card.max_hp}}<br>E: ${{card.energy}}</div>`;
+                let energyHtml = '';
+                if (Array.isArray(card.energy)) {{
+                    energyHtml = card.energy.map(t => {{
+                        const char = energyMap[t] || '?';
+                        const cls = t.toLowerCase();
+                        return `<span class="ptcg-symbol type-${{cls}}" title="${{t}}">${{char}}</span>`;
+                    }}).join('');
+                }} else {{
+                    energyHtml = card.energy;
+                }}
+                statsHtml = `<div class="card-stats">HP: ${{card.hp}}/${{card.max_hp}}<br>${{energyHtml}}</div>`;
             }}
 
             let statusHtml = '';
