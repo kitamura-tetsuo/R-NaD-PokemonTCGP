@@ -60,6 +60,8 @@ def main():
     parser.add_argument("--update_batch_size", type=int, default=None, help="Batch size for gradient updates (None means same as batch_size)")
     parser.add_argument("--timeout_reward", type=float, default=None, help="Fixed reward for timeout/draw (default: use bootstrap value)")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
+    parser.add_argument("--num_workers", type=int, default=4, help="Number of trajectory generation workers")
+    parser.add_argument("--disable_mlflow", action="store_true", help="Disable MLflow logging")
 
 
     args = parser.parse_args()
@@ -102,7 +104,8 @@ def main():
         accumulation_steps=args.accumulation_steps,
         update_batch_size=args.update_batch_size,
         timeout_reward=args.timeout_reward,
-        seed=args.seed
+        seed=args.seed,
+        num_workers=args.num_workers
     )
 
 
@@ -119,7 +122,9 @@ def main():
             logging.info(f"Resuming MLflow run: {run_id}")
 
     # Initialize ExperimentManager
-    experiment_manager = ExperimentManager(experiment_name="RNaD_Experiment", checkpoint_dir=args.checkpoint_dir, run_id=run_id)
+    experiment_manager = None
+    if not args.disable_mlflow:
+        experiment_manager = ExperimentManager(experiment_name="RNaD_Experiment", checkpoint_dir=args.checkpoint_dir, run_id=run_id)
 
     logging.info(f"Starting training with config: {config}")
 
