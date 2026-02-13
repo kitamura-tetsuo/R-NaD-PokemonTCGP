@@ -50,23 +50,6 @@ def measure_sps(config, steps=5):
 
     elapsed = end - start
 
-    # Calculate SPS: (steps * total_samples_per_step) / elapsed
-    # config.batch_size is the simulation batch size (number of environments)
-    # config.accumulation_steps is how many simulation steps are accumulated before update
-    # In RNaDLearner.update, we iterate accumulation_steps times.
-    # So one call to train_step performs 1 simulation step for batch_size envs?
-    # No, wait.
-    # train_step calls generate_trajectories ONCE.
-    # generate_trajectories runs max_len steps? No.
-    # Let's check generate_trajectories in rnad.py
-    # It runs `for i_step in range(max_len): ...`
-    # It collects trajectories of length max_len (unroll_length).
-    # So one train_step generates batch_size * unroll_length samples?
-    # Wait, RNaDLearner.generate_trajectories loops max_len times.
-    # It returns a batch of shape (T, B, ...).
-    # T = max_len (unroll_length). B = batch_size.
-    # So one train_step generates batch_size * unroll_length samples.
-
     total_samples = steps * config.batch_size * config.unroll_length
     sps = total_samples / (elapsed + 1e-6)
 
@@ -90,7 +73,7 @@ def tune_throughput(base_config):
 
     logging.info(f"Starting throughput tuning for base batch_size={current_bs}...")
 
-    multipliers = [1, 2, 4, 8, 16]
+    multipliers = [0.25, 0.5, 1, 2, 4, 8, 16]
 
     for m in multipliers:
         test_bs = current_bs * m
@@ -100,10 +83,6 @@ def tune_throughput(base_config):
         try:
             logging.info(f"Testing batch_size={test_bs}...")
             # Create temp config
-            # Note: We keep update_batch_size same or scale it?
-            # Usually if we increase batch_size (simulation), we might want to increase update_batch_size too for efficiency,
-            # but if update_batch_size is None, it defaults to batch_size.
-            # So scaling batch_size automatically scales SGD batch size if it was None.
             test_config = base_config._replace(batch_size=test_bs)
 
             # Use fewer steps for large batches to save time
@@ -126,6 +105,48 @@ def tune_throughput(base_config):
 
     logging.info(f"Throughput tuning complete. Best batch_size={best_bs} (SPS={best_sps:.2f})")
     return best_bs
+
+def get_divisors(n):
+    """Finds all divisors of n."""
+    divs = []
+    for i in range(1, int(n**0.5) + 1):
+        if n % i == 0:
+            divs.append(i)
+            if i*i != n:
+                divs.append(n // i)
+    return sorted(divs, reverse=True)
+
+def tune_update_bs(base_config, total_bs):
+    """
+    Finds the maximum update_batch_size that divides total_bs and fits in memory.
+    """
+    divisors = get_divisors(total_bs)
+    best_update_bs = base_config.batch_size # Default to current batch_size
+    
+    logging.info(f"Starting update_batch_size tuning for total_bs={total_bs}...")
+    
+    # We want the largest divisor that fits.
+    # Divisors are already sorted descending.
+    for test_bs in divisors:
+        # If it's too small, don't bother? 
+        # Actually, let's keep it simple.
+        try:
+            logging.info(f"Testing update_batch_size={test_bs}...")
+            test_config = base_config._replace(update_batch_size=test_bs)
+            
+            # Use very few steps, we just want to check OOM
+            steps = 2
+            sps = measure_sps(test_config, steps=steps)
+            logging.info(f"update_batch_size={test_bs} is OK. (SPS={sps:.2f})")
+            
+            best_update_bs = test_bs
+            break # Found the largest possible
+        except Exception as e:
+            logging.info(f"update_batch_size={test_bs} failed: {e}. Trying smaller divisor.")
+            continue
+            
+    logging.info(f"update_batch_size tuning complete. Best update_batch_size={best_update_bs}")
+    return best_update_bs
 
 def objective(trial: optuna.Trial, args: argparse.Namespace):
     # 1. Sample Hyperparameters
@@ -189,9 +210,16 @@ def objective(trial: optuna.Trial, args: argparse.Namespace):
     if args.max_steps > 0:
         best_bs = tune_throughput(config)
         # Update config with optimal batch size
+        total_bs = config.batch_size * config.accumulation_steps
         config = config._replace(batch_size=best_bs)
+        config = config._replace(accumulation_steps=int(total_bs/best_bs))
+        
+        # New: Tune update_batch_size
+        best_update_bs = tune_update_bs(config, total_bs)
+        config = config._replace(update_batch_size=best_update_bs)
     else:
         best_bs = config.batch_size
+        best_update_bs = config.update_batch_size or best_bs
     # --- AUTO-TUNING END ---
 
     # 4. Experiment Manager (MLflow) & Checkpoint Directory
@@ -214,6 +242,7 @@ def objective(trial: optuna.Trial, args: argparse.Namespace):
     experiment_manager.log_params(config)
     experiment_manager.log_params({"trial_number": trial.number})
     experiment_manager.log_params({"tuned_batch_size": best_bs})
+    experiment_manager.log_params({"tuned_update_batch_size": best_update_bs})
 
     # 5. Run Training
     try:
