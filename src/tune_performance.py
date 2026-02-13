@@ -64,16 +64,17 @@ def make_objective(args):
                 cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
-                text=True
+                text=True,
+                bufsize=1
             )
 
             sps_values = []
+            full_output = []
             # Pattern to find 'sps': 123.45 in the log output
             sps_pattern = re.compile(r"'sps': ([\d\.\+e-]+)")
 
             for line in process.stdout:
-                # We can optionally log the subprocess output for debugging
-                # logging.debug(line.strip())
+                full_output.append(line)
                 
                 match = sps_pattern.search(line)
                 if match:
@@ -85,33 +86,46 @@ def make_objective(args):
 
             process.wait()
 
-            # 4. Handle failure (OOM, etc.)
-            if process.returncode != 0:
-                logging.warning(f"Trial {trial.number} failed with return code {process.returncode} (likely OOM or crash).")
-                # Cleanup
-                if os.path.exists(checkpoint_dir):
-                    shutil.rmtree(checkpoint_dir)
-                return float('-inf')
-
-            if not sps_values:
-                logging.warning(f"Trial {trial.number}: No SPS values found in logs.")
-                if os.path.exists(checkpoint_dir):
-                    shutil.rmtree(checkpoint_dir)
+            # 4. Handle failure (OOM, crash, or no data)
+            is_failure = (process.returncode != 0) or (not sps_values)
+            
+            if is_failure:
+                error_msg = f"Trial {trial.number} failed"
+                if process.returncode != 0:
+                    error_msg += f" with return code {process.returncode}."
+                else:
+                    error_msg += ": No SPS values found in logs."
+                
+                logging.warning(error_msg)
+                
+                # Save full output for debugging
+                log_file = os.path.join(checkpoint_dir, "error.log")
+                with open(log_file, "w") as f:
+                    f.writelines(full_output)
+                
+                logging.warning(f"Full output saved to: {log_file}")
+                
+                # Print the tail of the output for immediate visibility
+                tail_size = 20
+                if len(full_output) > 0:
+                    logging.warning("Last few lines of output:")
+                    for line in full_output[-tail_size:]:
+                        logging.warning(f"  [STDOUT] {line.strip()}")
+                
+                # Cleanup (keep the log file, but remove other things if any)
                 return float('-inf')
 
             # 5. Calculate objective value
             # Ignore the first few steps (compilation period)
             if len(sps_values) > 2:
                 # Discard early samples to avoid compilation/init bias
-                # For short runs (max_steps=5), we might only have a few.
-                # If we have enough, skip the first 2.
                 final_sps = np.mean(sps_values[min(2, len(sps_values)-1):])
             else:
                 final_sps = np.mean(sps_values)
 
             logging.info(f"Trial {trial.number} finished. Calculated SPS: {final_sps:.2f}")
 
-            # Cleanup trial-specific checkpoint directory
+            # Cleanup trial-specific checkpoint directory on success
             if os.path.exists(checkpoint_dir):
                 shutil.rmtree(checkpoint_dir)
 
