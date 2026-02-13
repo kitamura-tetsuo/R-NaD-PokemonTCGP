@@ -1,4 +1,5 @@
 import optuna
+from optuna.trial import TrialState
 import mlflow
 import os
 import logging
@@ -79,19 +80,27 @@ def objective(trial: optuna.Trial, args: argparse.Namespace):
         test_games=args.test_games
     )
     
-    # 4. Experiment Manager (MLflow)
-    run_name = f"hpo_trial_{trial.number}"
-    experiment_manager = ExperimentManager(experiment_name="RNaD_HPO", run_id=None)
+    # 4. Experiment Manager (MLflow) & Checkpoint Directory
+    # Ensure we use a consistent checkpoint directory even if the trial ID changes during resumption
+    checkpoint_dir = trial.user_attrs.get("checkpoint_dir")
+    if checkpoint_dir is None:
+        run_name = f"hpo_trial_{trial.number}"
+        hpo_checkpoint_root = os.path.join(args.output_dir, "checkpoints_hpo")
+        checkpoint_dir = os.path.join(hpo_checkpoint_root, run_name)
+        trial.set_user_attr("checkpoint_dir", checkpoint_dir)
+
+    mlflow_run_id = trial.user_attrs.get("mlflow_run_id")
+    experiment_manager = ExperimentManager(experiment_name="RNaD_HPO", run_id=mlflow_run_id)
     
+    # Store run_id for future resumes
+    if mlflow_run_id is None:
+        trial.set_user_attr("mlflow_run_id", experiment_manager.run_id)
+        
     # Log trial params to MLflow
     experiment_manager.log_params(config)
     experiment_manager.log_params({"trial_number": trial.number})
     
     # 5. Run Training
-    # Save HPO checkpoints in output_dir/checkpoints_hpo
-    hpo_checkpoint_root = os.path.join(args.output_dir, "checkpoints_hpo")
-    checkpoint_dir = os.path.join(hpo_checkpoint_root, run_name)
-    
     try:
         train_loop(
             config=config,
@@ -109,9 +118,12 @@ def objective(trial: optuna.Trial, args: argparse.Namespace):
         raise e
         
     # 6. Retrieve result
-    frozen_trial = trial.study.get_trials()[-1] # Get latest finished trial
-    if frozen_trial.intermediate_values:
-        final_winrate = max(frozen_trial.intermediate_values.values())
+    # Get this specific trial to access its intermediate values safely
+    trials = trial.study.get_trials(deepcopy=False)
+    this_frozen_trial = next((t for t in trials if t.number == trial.number), None)
+    
+    if this_frozen_trial and this_frozen_trial.intermediate_values:
+        final_winrate = max(this_frozen_trial.intermediate_values.values())
         mlflow.log_metric("final_max_winrate", final_winrate)
         mlflow.end_run()
         return final_winrate
@@ -137,8 +149,8 @@ def main():
     
     # Optimization loop parameters
     parser.add_argument("--max_steps", type=int, default=20000)
-    parser.add_argument("--test_interval", type=int, default=1000)
-    parser.add_argument("--save_interval", type=int, default=5000)
+    parser.add_argument("--test_interval", type=int, default=100)
+    parser.add_argument("--save_interval", type=int, default=100)
     parser.add_argument("--n_trials", type=int, default=20)
     parser.add_argument("--study_name", type=str, default=None)
     parser.add_argument("--output_dir", type=str, default=".", help="Directory to save hpo.db and best_params.txt")
@@ -185,7 +197,58 @@ def main():
     logging.info(f"Fixed params: batch_size={args.batch_size}, update_batch_size={args.update_batch_size}, accumulation={args.accumulation_steps}, workers={args.num_workers}")
     logging.info(f"Output directory: {args.output_dir}")
     
-    study.optimize(lambda trial: objective(trial, args), n_trials=args.n_trials)
+    # 1. Detect trials to resume or extend
+    # RUNNING: Interrupted trials
+    # COMPLETE: Finished trials that might need extension if max_steps increased
+    all_trials = study.get_trials(deepcopy=False)
+    running_trials = [t for t in all_trials if t.state == TrialState.RUNNING]
+    
+    # COMPLETE trials that haven't reached current max_steps
+    # We allow a small margin (e.g., 10%) for intervals
+    completed_trials = [t for t in all_trials if t.state == TrialState.COMPLETE]
+    extendable_trials = []
+    for t in completed_trials:
+        last_step = max(t.intermediate_values.keys()) if t.intermediate_values else 0
+        if last_step < args.max_steps * 0.95: # 95% threshold to account for log_interval
+            extendable_trials.append(t)
+
+    # A. Resume RUNNING trials immediately
+    if running_trials:
+        logging.info(f"Found {len(running_trials)} unfinished trials. Resuming them...")
+        for frozen_trial in running_trials:
+            logging.info(f"Resuming trial {frozen_trial.number}...")
+            trial = optuna.trial.Trial(study, frozen_trial._trial_id)
+            try:
+                result = objective(trial, args)
+                study.tell(trial, result)
+            except optuna.TrialPruned:
+                study.tell(trial, state=TrialState.PRUNED)
+            except Exception as e:
+                logging.error(f"Trial {frozen_trial.number} failed: {e}")
+                study.tell(trial, state=TrialState.FAIL)
+
+    # B. If max_steps was increased, enqueue extendable trials
+    if extendable_trials:
+        logging.info(f"Found {len(extendable_trials)} trials that haven't reached new max_steps ({args.max_steps}). Enqueuing extension trials...")
+        for t in extendable_trials:
+            # Enqueue with same params and carry over user_attrs (checkpoint_dir, mlflow_run_id)
+            study.enqueue_trial(t.params, user_attrs=t.user_attrs)
+
+    # 2. Run additional trials if we haven't reached the target count
+    # Count only trials that actually reached the target steps
+    def is_truly_complete(t):
+        if t.state != TrialState.COMPLETE: return False
+        last_step = max(t.intermediate_values.keys()) if t.intermediate_values else 0
+        return last_step >= args.max_steps * 0.95
+
+    n_finished = len([t for t in all_trials if is_truly_complete(t) or t.state == TrialState.PRUNED])
+    n_remaining = max(0, args.n_trials - n_finished)
+    
+    if n_remaining > 0:
+        logging.info(f"Target finished trials: {args.n_trials}, Current truly complete: {n_finished}. Running {n_remaining} more...")
+        study.optimize(lambda trial: objective(trial, args), n_trials=n_remaining)
+    else:
+        logging.info(f"All {args.n_trials} trials have reached max_steps or were pruned.")
     
     logging.info("HPO Complete.")
     logging.info(f"Best trial: {study.best_trial.number}")
