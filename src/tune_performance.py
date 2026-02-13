@@ -70,8 +70,8 @@ def make_objective(args):
 
             sps_values = []
             full_output = []
-            # Pattern to find 'sps': 123.45 in the log output
-            sps_pattern = re.compile(r"'sps': ([\d\.\+e-]+)")
+            # Pattern to find 'sps': 123.45 or 'sps': np.float64(123.45) in the log output
+            sps_pattern = re.compile(r"'sps':\s*(?:np\.[^(]+\()?([\d\.\+eE-]+)\)?")
 
             for line in process.stdout:
                 full_output.append(line)
