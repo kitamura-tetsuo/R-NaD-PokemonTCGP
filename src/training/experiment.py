@@ -35,16 +35,29 @@ class ExperimentManager:
     def log_params(self, config: Any):
         """Logs configuration parameters to MLflow."""
         if hasattr(config, '_asdict'):
-            params = config._asdict()
+            params = dict(config._asdict())
         elif isinstance(config, dict):
-            params = config
+            params = dict(config)
         else:
             try:
-                params = vars(config)
+                params = dict(vars(config))
             except TypeError:
                 params = {"config": str(config)}
 
-        mlflow.log_params(params)
+        # Define keys to exclude from parameters and which ones should be tags
+        exclude_from_params = ["batch_size", "max_steps", "deck_id_1", "deck_id_2", "log_interval", "save_interval"]
+        save_as_tags = ["batch_size", "max_steps", "log_interval", "save_interval"]
+
+        # Set tags
+        for key in save_as_tags:
+            if key in params:
+                mlflow.set_tag(key, str(params[key]))
+
+        # Filter params
+        filtered_params = {k: v for k, v in params.items() if k not in exclude_from_params}
+        
+        if filtered_params:
+            mlflow.log_params(filtered_params)
 
     def log_metrics(self, step: int, metrics: Dict[str, Any]):
         """Logs metrics to MLflow."""

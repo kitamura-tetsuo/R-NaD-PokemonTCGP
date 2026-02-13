@@ -13,7 +13,7 @@ import gc
 # Adjust path to import src modules if needed
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from src.rnad import train_loop, RNaDConfig, LeagueConfig, RNaDLearner
+from src.rnad import train_loop, RNaDConfig, LeagueConfig, RNaDLearner, TrajectoryGenerator
 from src.training.experiment import ExperimentManager
 
 # Configure logging
@@ -28,7 +28,7 @@ except Exception:
 
 def measure_sps(config, steps=5):
     """
-    Measures SPS for a given config using RNaDLearner.
+    Measures SPS for a given config using RNaDLearner and TrajectoryGenerator.
     """
     # Force GC to clean up previous runs
     gc.collect()
@@ -40,16 +40,25 @@ def measure_sps(config, steps=5):
     learner = RNaDLearner("deckgym_ptcgp", config)
     learner.init(jax.random.PRNGKey(0))
 
-    # Warmup
-    learner.train_step(jax.random.PRNGKey(0), 0)
+    generator = TrajectoryGenerator(learner, num_workers=config.num_workers)
+    generator.start()
 
-    start = time.time()
-    for i in range(steps):
-        learner.train_step(jax.random.PRNGKey(0), i+1)
-    end = time.time()
+    try:
+        # Warmup
+        batch = generator.get_batch()
+        learner.update(batch, 0)
+
+        start = time.time()
+        for i in range(steps):
+            batch = generator.get_batch()
+            learner.update(batch, i+1)
+        end = time.time()
+    finally:
+        generator.stop()
 
     elapsed = end - start
 
+    # Simulation samples = steps * batch_size * unroll_length (approx)
     total_samples = steps * config.batch_size * config.unroll_length
     sps = total_samples / (elapsed + 1e-6)
 
@@ -76,7 +85,9 @@ def tune_throughput(base_config):
     multipliers = [0.25, 0.5, 1, 2, 4, 8, 16]
 
     for m in multipliers:
-        test_bs = current_bs * m
+        test_bs = int(current_bs * m)
+        if test_bs < 1:
+            continue
         if test_bs > max_bs:
             break
 
@@ -148,6 +159,45 @@ def tune_update_bs(base_config, total_bs):
     logging.info(f"update_batch_size tuning complete. Best update_batch_size={best_update_bs}")
     return best_update_bs
 
+def tune_workers(base_config):
+    """
+    Finds the num_workers that maximizes SPS.
+    """
+    current_workers = base_config.num_workers
+    best_workers = current_workers
+    best_sps = 0
+    
+    # Try a range of workers
+    if HAS_TPU:
+        potential_workers = [8, 16, 24, 32, 48, 64, 80, 96, 128]
+    else:
+        potential_workers = [1, 2, 4, 8, 12, 16]
+    
+    logging.info(f"Starting num_workers tuning for batch_size={base_config.batch_size}...")
+    
+    for w in potential_workers:
+        try:
+            logging.info(f"Testing num_workers={w}...")
+            test_config = base_config._replace(num_workers=w)
+            
+            sps = measure_sps(test_config, steps=5)
+            logging.info(f"num_workers={w} -> SPS={sps:.2f}")
+            
+            if sps > best_sps:
+                best_sps = sps
+                best_workers = w
+            else:
+                # If SPS drops significantly, stop.
+                if sps < best_sps * 0.95:
+                    logging.info(f"SPS dropped ({sps:.2f} < {best_sps:.2f} * 0.95). Stopping.")
+                    break
+        except Exception as e:
+            logging.warning(f"num_workers {w} failed: {e}. Stopping.")
+            break
+            
+    logging.info(f"num_workers tuning complete. Best num_workers={best_workers} (SPS={best_sps:.2f})")
+    return best_workers
+
 def objective(trial: optuna.Trial, args: argparse.Namespace):
     # 1. Sample Hyperparameters
     learning_rate = trial.suggest_float("learning_rate", 1e-5, 1e-3, log=True)
@@ -217,9 +267,14 @@ def objective(trial: optuna.Trial, args: argparse.Namespace):
         # New: Tune update_batch_size
         best_update_bs = tune_update_bs(config, total_bs)
         config = config._replace(update_batch_size=best_update_bs)
+        
+        # New: Tune num_workers
+        best_workers = tune_workers(config)
+        config = config._replace(num_workers=best_workers)
     else:
         best_bs = config.batch_size
         best_update_bs = config.update_batch_size or best_bs
+        best_workers = config.num_workers
     # --- AUTO-TUNING END ---
 
     # 4. Experiment Manager (MLflow) & Checkpoint Directory
@@ -243,6 +298,7 @@ def objective(trial: optuna.Trial, args: argparse.Namespace):
     experiment_manager.log_params({"trial_number": trial.number})
     experiment_manager.log_params({"tuned_batch_size": best_bs})
     experiment_manager.log_params({"tuned_update_batch_size": best_update_bs})
+    experiment_manager.log_params({"tuned_num_workers": best_workers})
 
     # 5. Run Training
     try:
