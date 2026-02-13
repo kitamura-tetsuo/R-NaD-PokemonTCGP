@@ -389,6 +389,10 @@ class RNaDLearner:
         self.sgd_batch_size = config.update_batch_size or config.batch_size
         
         total_bs = config.batch_size * config.accumulation_steps
+        if self.sgd_batch_size > total_bs:
+            logging.warning(f"update_batch_size ({self.sgd_batch_size}) is larger than total_bs ({total_bs}). Reducing sgd_batch_size to {total_bs}.")
+            self.sgd_batch_size = total_bs
+
         if total_bs % self.sgd_batch_size != 0:
             logging.warning(f"total_bs ({total_bs}) is not divisible by update_batch_size ({self.sgd_batch_size}). "
                            f"The last {total_bs % self.sgd_batch_size} samples will be ignored.")
@@ -770,6 +774,16 @@ class TrajectoryGenerator:
 
     def stop(self):
         self.stop_event.set()
+        # Drain the queue to unblock workers waiting on queue.put()
+        try:
+            while not self.queue.empty():
+                self.queue.get_nowait()
+        except queue.Empty:
+            pass
+            
+        # Optional: Wait for threads to finish their current loop
+        for t in self.threads:
+            t.join(timeout=1.0)
 
     def get_batch(self):
         return self.queue.get()
@@ -1156,6 +1170,10 @@ def train_loop(config: RNaDConfig, experiment_manager: Optional[Any] = None, che
     if experiment_manager and hasattr(experiment_manager, 'run_id'):
         metadata['mlflow_run_id'] = experiment_manager.run_id
     learner.save_checkpoint(ckpt_path, final_step, metadata=metadata)
+    
+    # Properly stop background threads
+    logging.info("Stopping trajectory generator...")
+    generator.stop()
     logging.info("Training complete.")
 
 if __name__ == "__main__":

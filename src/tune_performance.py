@@ -87,7 +87,10 @@ def make_objective(args):
             process.wait()
 
             # 4. Handle failure (OOM, crash, or no data)
-            is_failure = (process.returncode != 0) or (not sps_values)
+            # Sometimes a SIGABRT occurs during shutdown (return code -6/134) even if 
+            # training finished successfully. We check "Training complete." to be sure.
+            reached_end = any("Training complete." in line for line in full_output)
+            is_failure = (not reached_end and process.returncode != 0) or (not sps_values)
             
             if is_failure:
                 error_msg = f"Trial {trial.number} failed"
