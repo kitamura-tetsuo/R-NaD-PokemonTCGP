@@ -6,3 +6,4 @@ open_spiel
 mlflow
 orbax-checkpoint
 gymnasium
+optuna

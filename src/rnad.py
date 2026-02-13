@@ -9,6 +9,7 @@ import time
 import pickle
 import os
 import re
+import optuna # Added for HPO
 from typing import NamedTuple, Tuple, List, Dict, Any, Optional
 from src.models import DeckGymNet, TransformerNet, CardTransformerNet
 from functools import partial
@@ -209,6 +210,7 @@ class RNaDConfig(NamedTuple):
     transformer_seq_len: int = 16
     timeout_reward: Optional[float] = None
     seed: int = 42
+    num_workers: int = 4
 
 
 def v_trace(
@@ -916,7 +918,7 @@ def evaluate_against_baseline(learner: RNaDLearner, baseline_params: Any, config
     
     return results
 
-def train_loop(config: RNaDConfig, experiment_manager: Optional[Any] = None, checkpoint_dir: str = "checkpoints", resume_checkpoint: Optional[str] = None):
+def train_loop(config: RNaDConfig, experiment_manager: Optional[Any] = None, checkpoint_dir: str = "checkpoints", resume_checkpoint: Optional[str] = None, trial: Optional[optuna.Trial] = None):
     learner = RNaDLearner("deckgym_ptcgp", config)
     learner.init(jax.random.PRNGKey(config.seed))
 
@@ -949,7 +951,7 @@ def train_loop(config: RNaDConfig, experiment_manager: Optional[Any] = None, che
     save_interval = config.save_interval if hasattr(config, 'save_interval') else 1000
 
     # Start Trajectory Generator
-    generator = TrajectoryGenerator(learner, num_workers=8, max_queue_size=20)
+    generator = TrajectoryGenerator(learner, num_workers=config.num_workers, max_queue_size=20)
     generator.start()
     
     # Capture baseline parameters (Step 0)
@@ -1057,6 +1059,35 @@ def train_loop(config: RNaDConfig, experiment_manager: Optional[Any] = None, che
                  if experiment_manager:
                      experiment_manager.log_metrics(step, eval_metrics)
                  logging.info(f"Step {step}: Evaluation results: {eval_metrics}")
+
+                 # HPO: C. Pruning by Win Rate
+                 if trial:
+                     # Report intermediate objective value
+                     if "test_winrate_mean" in eval_metrics:
+                         trial.report(eval_metrics["test_winrate_mean"], step)
+                         if trial.should_prune():
+                             logging.info(f"Step {step}: Pruning trial due to poor win rate.")
+                             raise optuna.TrialPruned()
+
+        # HPO: A. Value Network Convergence Check (Step 2000-5000)
+        if trial and 2000 <= step <= 5000:
+            if 'explained_variance' in metrics and metrics['explained_variance'] < 0.05:
+                logging.info(f"Step {step}: Pruning trial due to low explained_variance (< 0.05).")
+                raise optuna.TrialPruned()
+            
+        # HPO: B. Entropy Collapse Check (Step > 5000)
+        if trial and step > 5000:
+            # 1. Mode Collapse check
+            if 'mean_entropy' in metrics and metrics['mean_entropy'] < 0.1:
+                logging.info(f"Step {step}: Pruning trial due to mode collapse (entropy < 0.1).")
+                raise optuna.TrialPruned()
+            
+            # 2. Learning Stagnation check (Entropy not decreasing significantly from start)
+            # config.entropy_schedule_start is the initial target entropy
+            if 'mean_entropy' in metrics and metrics['mean_entropy'] > config.entropy_schedule_start * 0.95:
+                 # If entropy hasn't dropped by at least 5% after 5000 steps, it might be stuck
+                 logging.info(f"Step {step}: Pruning trial due to entropy stagnation.")
+                 raise optuna.TrialPruned()
 
     # Save final checkpoint
     final_step = config.max_steps - 1
