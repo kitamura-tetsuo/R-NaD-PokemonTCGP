@@ -2,6 +2,7 @@ import argparse
 import sys
 import os
 import json
+import re
 import random
 import datetime
 import logging
@@ -30,6 +31,8 @@ if optax is not None:
         sys.modules['optax.transforms'] = optax
     if 'optax.transforms._accumulation' not in sys.modules:
         sys.modules['optax.transforms._accumulation'] = optax
+
+place_pattern = re.compile(r"^Place\((.*), (\d+)\)$")
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Visualize the game tree with one AI side.")
@@ -136,6 +139,7 @@ def generate_html(tree_data, output_path):
         .card-img {{ width: 100%; border-radius: 3px; }}
         .card-stats {{ position: absolute; bottom: 0; left: 0; right: 0; background: rgba(0,0,0,0.7); color: white; font-size: 8px; padding: 1px; text-align: center; }}
         .node-label {{ background: rgba(255,255,255,0.8); padding: 2px 5px; border-radius: 3px; font-size: 10px; }}
+        .node--repeated circle {{ fill: #ddd; stroke: #999; }}
     </style>
 </head>
 <body>
@@ -153,13 +157,16 @@ def generate_html(tree_data, output_path):
         const height = document.getElementById('tree-container').clientHeight;
         const margin = {{ top: 20, right: 90, bottom: 30, left: 90 }};
 
+        const zoom = d3.zoom().on("zoom", (e) => g.attr("transform", e.transform));
         const svg = d3.select("#tree-container").append("svg")
             .attr("width", "100%")
             .attr("height", "100%")
-            .call(d3.zoom().on("zoom", (e) => g.attr("transform", e.transform)))
-            .append("g");
+            .call(zoom);
 
-        const g = svg.append("g").attr("transform", `translate(${{margin.left}},${{margin.top}})`);
+        const g = svg.append("g");
+        
+        // Set initial position
+        svg.call(zoom.transform, d3.zoomIdentity.translate(margin.left, margin.top));
 
         const tree = d3.tree().nodeSize([40, 200]);
         let root = d3.hierarchy(treeData, d => d.children);
@@ -176,9 +183,12 @@ def generate_html(tree_data, output_path):
                 .data(nodes, d => d.data.id || (d.data.id = Math.random()));
 
             const nodeEnter = node.enter().append("g")
-                .attr("class", d => `node ${{d.data.is_ai ? 'node--ai' : ''}} ${{d.data.is_chance ? 'node--chance' : ''}} ${{d.data.is_terminal ? 'node--terminal' : ''}}`)
+                .attr("class", d => `node ${{d.data.is_ai ? 'node--ai' : ''}} ${{d.data.is_chance ? 'node--chance' : ''}} ${{d.data.is_terminal ? 'node--terminal' : ''}} ${{d.data.is_repeated ? 'node--repeated' : ''}}`)
                 .attr("transform", d => `translate(${{d.y}},${{d.x}})`)
-                .on("click", (e, d) => showDetails(d.data));
+                .on("click", (e, d) => {{
+                    showDetails(d.data);
+                    if (d.data.is_repeated) jumpToNode(d.data.repeated_node_id);
+                }});
 
             nodeEnter.append("circle").attr("r", 10);
 
@@ -201,6 +211,27 @@ def generate_html(tree_data, output_path):
             link.transition().duration(200).attr("d", d3.linkHorizontal().x(d => d.y).y(d => d.x));
         }}
 
+        function jumpToNode(nodeId) {{
+            const target = root.descendants().find(d => d.data.id === nodeId);
+            if (target) {{
+                const container = document.getElementById('tree-container');
+                const w = container.clientWidth;
+                const h = container.clientHeight;
+                
+                // Animate zoom to target
+                d3.select("#tree-container").select("svg").transition().duration(750).call(
+                    zoom.transform,
+                    d3.zoomIdentity.translate(w/2 - target.y, h/2 - target.x)
+                );
+                
+                // Highlight temporarily
+                const nodeElement = g.selectAll(".node").filter(d => d.data.id === nodeId);
+                nodeElement.select("circle")
+                    .transition().duration(200).attr("r", 20)
+                    .transition().duration(500).attr("r", 10);
+            }}
+        }}
+
         function showDetails(data) {{
             const display = document.getElementById('state-display');
             if (!data.state) {{
@@ -212,6 +243,10 @@ def generate_html(tree_data, output_path):
             let html = `<div><strong>Step:</strong> ${{data.step}} | <strong>Turn:</strong> ${{state.turn}}</div>`;
             html += `<div><strong>Acting Player:</strong> Player ${{data.acting_player + 1}}</div>`;
             if (data.is_ai) html += `<div style="color:red">AI Decision Node</div>`;
+            if (data.is_repeated) {{
+                html += `<div style="color:orange"><strong>Repeated State</strong> (Pruned)</div>`;
+                html += `<button onclick="jumpToNode(${{data.repeated_node_id}})" style="margin-top:5px; padding:5px; cursor:pointer;">Jump to Original</button>`;
+            }}
             
             html += '<div class="board">';
             state.players.forEach((p, i) => {{
@@ -309,10 +344,90 @@ def main():
 
     # Tree Search
     node_id_counter = 0
+    visited_states = {} # state_key -> node_id
+
+    # Optimized key generation using tuples instead of JSON
+    def get_fast_state_key(state_raw, pending_chance):
+        players_info = []
+        for p in [0, 1]:
+            # Hand (sorted ids for canonicalization)
+            hand_ids = tuple(sorted([c.id for c in state_raw.get_hand(p)]))
+            
+            # Active
+            active = state_raw.get_active_pokemon(p)
+            active_info = None
+            if active:
+                # active properties
+                energy_names = tuple(sorted([e.name for e in active.attached_energy]))
+                status = []
+                if active.poisoned: status.append(1)
+                if active.asleep: status.append(2)
+                if active.paralyzed: status.append(3)
+                tool_id = active.attached_tool.id if hasattr(active, "attached_tool") and active.attached_tool else None
+                active_info = (active.card.id, active.remaining_hp, energy_names, tuple(status), tool_id)
+            
+            # Bench
+            bench_info = []
+            for mon in state_raw.get_bench_pokemon(p):
+                if mon:
+                    energy_names = tuple(sorted([e.name for e in mon.attached_energy]))
+                    tool_id = mon.attached_tool.id if hasattr(mon, "attached_tool") and mon.attached_tool else None
+                    bench_info.append((mon.card.id, mon.remaining_hp, energy_names, tool_id))
+                else:
+                    bench_info.append(None)
+                    
+            players_info.append((
+                hand_ids,
+                active_info,
+                tuple(bench_info),
+                state_raw.get_deck_size(p),
+                state_raw.get_discard_pile_size(p),
+                tuple(state_raw.points) if hasattr(state_raw.points, '__iter__') else state_raw.points
+            ))
+
+        return (
+            state_raw.turn_count,
+            state_raw.current_player,
+            tuple(players_info),
+            pending_chance
+        )
 
     def explore(state, depth, step, action_name):
         nonlocal node_id_counter
         node_id_counter += 1
+        
+
+        
+        # 1. Generate Fast Key (Optimization: Avoid extract_state_info/json.dumps for visited check)
+        state_raw = state.rust_game.get_state()
+        pending_chance = None
+        if hasattr(state, "_pending_stochastic_action") and state._pending_stochastic_action is not None:
+            pending_chance = state._pending_stochastic_action
+            
+        state_key = get_fast_state_key(state_raw, pending_chance)
+
+        # 2. Check Repeated
+        if state_key in visited_states:
+            # For repeated nodes, we don't need full state info
+            return {
+                "id": node_id_counter,
+                "action_name": action_name + " (Dup)",
+                "step": step,
+                "acting_player": state.current_player(),
+                "children": [],
+                "is_terminal": state.is_terminal(),
+                "is_repeated": True,
+                "repeated_node_id": visited_states[state_key],
+                "state": None # Optimization: Skip state extraction for repeated nodes
+            }
+        
+        visited_states[state_key] = node_id_counter
+
+        # 3. Extract Full Info (Only for new nodes)
+        state_info = extract_state_info(state_raw)
+        if pending_chance is not None:
+            state_info["_pending_chance"] = pending_chance
+
         node = {
             "id": node_id_counter,
             "action_name": action_name,
@@ -320,7 +435,7 @@ def main():
             "acting_player": state.current_player(),
             "children": [],
             "is_terminal": state.is_terminal(),
-            "state": extract_state_info(state.rust_game.get_state())
+            "state": state_info
         }
 
         if state.is_terminal() or depth >= args.max_depth:
@@ -351,10 +466,41 @@ def main():
                 child_state.apply_action(action)
                 node["children"].append(explore(child_state, depth + 1, step + 1, state.action_to_string(curr_p, action)))
             else:
-                for action in state.legal_actions():
+
+                legal_actions = state.legal_actions()
+                
+                # Filter 'Place' actions to bench to reduce branching factor
+                # Pattern: Place(CardName, Index)
+                # We want to keep only the minimum Index for each CardName where Index >= 1 (Bench)
+                actions_to_process = []
+                bench_place_groups = {} # card_name -> list of (index, action_id, action_str)
+
+                for action in legal_actions:
+                    action_str = state.action_to_string(curr_p, action)
+                    match = place_pattern.match(action_str)
+                    if match:
+                        card_name = match.group(1)
+                        index = int(match.group(2))
+                        if index >= 1: # Bench indices are 1, 2, 3
+                            if card_name not in bench_place_groups:
+                                bench_place_groups[card_name] = []
+                            bench_place_groups[card_name].append((index, action, action_str))
+                            continue
+                    
+                    actions_to_process.append((action, action_str))
+                
+                # Add back the min index bench placements
+                for card_name, group in bench_place_groups.items():
+                    # Sort by index and pick first (smallest index)
+                    group.sort(key=lambda x: x[0])
+                    best = group[0]
+                    actions_to_process.append((best[1], best[2]))
+                
+                # Process filtered actions
+                for action, action_str in actions_to_process:
                     child_state = state.clone()
                     child_state.apply_action(action)
-                    node["children"].append(explore(child_state, depth + 1, step + 1, state.action_to_string(curr_p, action)))
+                    node["children"].append(explore(child_state, depth + 1, step + 1, action_str))
         
         return node
 
