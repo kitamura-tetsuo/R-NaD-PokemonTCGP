@@ -2,6 +2,7 @@ import argparse
 import sys
 import os
 import json
+import sqlite3
 import re
 import random
 import datetime
@@ -39,7 +40,7 @@ def parse_args():
     parser.add_argument("--checkpoint", type=str, default=None, help="Path to checkpoint file.")
     parser.add_argument("--deck_id_1", type=str, default="deckgym-core/example_decks/mewtwoex.txt", help="Path to deck 1 file.")
     parser.add_argument("--deck_id_2", type=str, default="deckgym-core/example_decks/mewtwoex.txt", help="Path to deck 2 file.")
-    parser.add_argument("--output", type=str, default="tree.html", help="Path to output HTML file.")
+    parser.add_argument("--output", type=str, default="tree.sqlite", help="Path to output HTML file.")
     parser.add_argument("--seed", type=int, default=42, help="Random seed for chance nodes (if not exploring all) and initial split.")
     parser.add_argument("--device", type=str, choices=['cpu', 'gpu'], default='gpu', help="Device for inference.")
     parser.add_argument("--disable_jit", action="store_true", help="Disable JIT compilation.")
@@ -104,176 +105,83 @@ def extract_state_info(rust_state):
         info["players"].append(p_info)
     return info
 
-def generate_html(tree_data, output_path):
-    tree_json = json.dumps(tree_data)
-    html_content = f"""
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <title>DeckGym Tree Visualization</title>
-    <script src="https://d3js.org/d3.v7.min.js"></script>
-    <style>
-        body {{ font-family: sans-serif; background-color: #f8f9fa; margin: 0; display: flex; height: 100vh; overflow: hidden; }}
-        #tree-container {{ flex: 1; border-right: 1px solid #ddd; position: relative; cursor: grab; }}
-        #tree-container:active {{ cursor: grabbing; }}
-        #detail-panel {{ width: 400px; padding: 20px; overflow-y: auto; background: white; box-shadow: -2px 0 5px rgba(0,0,0,0.1); }}
-        .node circle {{ fill: #fff; stroke: steelblue; stroke-width: 3px; cursor: pointer; }}
-        .node text {{ font: 12px sans-serif; }}
-        .link {{ fill: none; stroke: #ccc; stroke-width: 2px; }}
-        .node--ai circle {{ stroke: #f03030; }}
-        .node--chance circle {{ stroke: #30f030; }}
-        .node--terminal circle {{ fill: #555; }}
+class TreeStorage:
+    def __init__(self, db_path):
+        self.conn = sqlite3.connect(db_path)
+        self.cursor = self.conn.cursor()
+        self.setup_db()
+    
+    def setup_db(self):
+        self.cursor.execute("DROP TABLE IF EXISTS nodes")
+        self.cursor.execute("DROP TABLE IF EXISTS edges")
         
-        /* Card styles from battle.py */
-        .ptcg-symbol {{ display: inline-block; width: 1.2em; text-align: center; border-radius: 50%; font-weight: bold; color: white; text-shadow: 1px 1px 1px black; margin-right: 2px; }}
-        .type-grass {{ background-color: #78C850; }} .type-fire {{ background-color: #F08030; }} .type-water {{ background-color: #6890F0; }}
-        .type-lightning {{ background-color: #F8D030; color: black; text-shadow: none; }} .type-psychic {{ background-color: #F85888; }}
-        .type-fighting {{ background-color: #C03028; }} .type-darkness {{ background-color: #705848; }}
-        .type-metal {{ background-color: #B8B8D0; color: black; text-shadow: none; }} .type-colorless {{ background-color: #A8A878; color: black; text-shadow: none; }}
-
-        .board {{ display: flex; flex-direction: column; gap: 10px; }}
-        .player-area {{ border: 1px solid #ccc; padding: 10px; border-radius: 5px; background-color: #fefefe; }}
-        .zone {{ display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 5px; align-items: flex-start; }}
-        .card-container {{ position: relative; width: 40px; }}
-        .card-img {{ width: 100%; border-radius: 3px; }}
-        .card-stats {{ position: absolute; bottom: 0; left: 0; right: 0; background: rgba(0,0,0,0.7); color: white; font-size: 8px; padding: 1px; text-align: center; }}
-        .node-label {{ background: rgba(255,255,255,0.8); padding: 2px 5px; border-radius: 3px; font-size: 10px; }}
-        .node--repeated circle {{ fill: #ddd; stroke: #999; }}
-    </style>
-</head>
-<body>
-    <div id="tree-container"></div>
-    <div id="detail-panel">
-        <h3>Node Details</h3>
-        <p>Click a node to see the game state here.</p>
-        <div id="state-display"></div>
-    </div>
-
-    <script>
-        const treeData = {tree_json};
+        self.cursor.execute("""
+            CREATE TABLE nodes (
+                id INTEGER PRIMARY KEY,
+                step INTEGER,
+                turn INTEGER,
+                acting_player INTEGER,
+                is_terminal BOOLEAN,
+                is_chance BOOLEAN,
+                is_ai BOOLEAN,
+                is_repeated BOOLEAN,
+                repeated_node_id INTEGER,
+                action_name TEXT,
+                state_json TEXT,
+                state_hash INTEGER
+            )
+        """)
         
-        const width = document.getElementById('tree-container').clientWidth;
-        const height = document.getElementById('tree-container').clientHeight;
-        const margin = {{ top: 20, right: 90, bottom: 30, left: 90 }};
-
-        const zoom = d3.zoom().on("zoom", (e) => g.attr("transform", e.transform));
-        const svg = d3.select("#tree-container").append("svg")
-            .attr("width", "100%")
-            .attr("height", "100%")
-            .call(zoom);
-
-        const g = svg.append("g");
+        self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_state_hash ON nodes(state_hash)")
         
-        // Set initial position
-        svg.call(zoom.transform, d3.zoomIdentity.translate(margin.left, margin.top));
+        self.cursor.execute("""
+            CREATE TABLE edges (
+                parent_id INTEGER,
+                child_id INTEGER,
+                action_name TEXT,
+                UNIQUE(parent_id, child_id, action_name)
+            )
+        """)
+        self.conn.commit()
+    
+    def add_node(self, node_data, state_hash=None):
+        state_json = json.dumps(node_data.get("state")) if node_data.get("state") else None
+        
+        self.cursor.execute("""
+            INSERT INTO nodes (
+                id, step, turn, acting_player, 
+                is_terminal, is_chance, is_ai, 
+                is_repeated, repeated_node_id, action_name, state_json, state_hash
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            node_data["id"],
+            node_data.get("step"),
+            node_data.get("state", {}).get("turn", 0) if node_data.get("state") else 0,
+            node_data.get("acting_player"),
+            node_data.get("is_terminal", False),
+            node_data.get("is_chance", False),
+            node_data.get("is_ai", False),
+            node_data.get("is_repeated", False),
+            node_data.get("repeated_node_id"),
+            node_data.get("action_name"),
+            state_json,
+            state_hash
+        ))
+        return node_data["id"]
 
-        const tree = d3.tree().nodeSize([40, 200]);
-        let root = d3.hierarchy(treeData, d => d.children);
+    def check_visited(self, state_hash):
+        self.cursor.execute("SELECT id FROM nodes WHERE state_hash = ? AND is_repeated = 0 LIMIT 1", (state_hash,))
+        row = self.cursor.fetchone()
+        return row[0] if row else None
 
-        update(root);
+    def add_edge(self, parent_id, child_id, action_name):
+        self.cursor.execute("INSERT OR IGNORE INTO edges (parent_id, child_id, action_name) VALUES (?, ?, ?)", (parent_id, child_id, action_name))
 
-        function update(source) {{
-            const nodes = root.descendants();
-            const links = root.links();
+    def commit(self):
+        self.conn.commit()
 
-            tree(root);
-
-            const node = g.selectAll(".node")
-                .data(nodes, d => d.data.id || (d.data.id = Math.random()));
-
-            const nodeEnter = node.enter().append("g")
-                .attr("class", d => `node ${{d.data.is_ai ? 'node--ai' : ''}} ${{d.data.is_chance ? 'node--chance' : ''}} ${{d.data.is_terminal ? 'node--terminal' : ''}} ${{d.data.is_repeated ? 'node--repeated' : ''}}`)
-                .attr("transform", d => `translate(${{d.y}},${{d.x}})`)
-                .on("click", (e, d) => {{
-                    showDetails(d.data);
-                    if (d.data.is_repeated) jumpToNode(d.data.repeated_node_id);
-                }});
-
-            nodeEnter.append("circle").attr("r", 10);
-
-            nodeEnter.append("text")
-                .attr("dy", ".35em")
-                .attr("x", d => d.children ? -13 : 13)
-                .attr("text-anchor", d => d.children ? "end" : "start")
-                .text(d => d.data.action_name);
-
-            const nodeUpdate = nodeEnter.merge(node);
-            nodeUpdate.transition().duration(200).attr("transform", d => `translate(${{d.y}},${{d.x}})`);
-
-            const link = g.selectAll(".link")
-                .data(links, d => d.target.data.id);
-
-            link.enter().insert("path", "g")
-                .attr("class", "link")
-                .attr("d", d3.linkHorizontal().x(d => d.y).y(d => d.x));
-
-            link.transition().duration(200).attr("d", d3.linkHorizontal().x(d => d.y).y(d => d.x));
-        }}
-
-        function jumpToNode(nodeId) {{
-            const target = root.descendants().find(d => d.data.id === nodeId);
-            if (target) {{
-                const container = document.getElementById('tree-container');
-                const w = container.clientWidth;
-                const h = container.clientHeight;
-                
-                // Animate zoom to target
-                d3.select("#tree-container").select("svg").transition().duration(750).call(
-                    zoom.transform,
-                    d3.zoomIdentity.translate(w/2 - target.y, h/2 - target.x)
-                );
-                
-                // Highlight temporarily
-                const nodeElement = g.selectAll(".node").filter(d => d.data.id === nodeId);
-                nodeElement.select("circle")
-                    .transition().duration(200).attr("r", 20)
-                    .transition().duration(500).attr("r", 10);
-            }}
-        }}
-
-        function showDetails(data) {{
-            const display = document.getElementById('state-display');
-            if (!data.state) {{
-                display.innerHTML = "<p>No state data for this node.</p>";
-                return;
-            }}
-            
-            const state = data.state;
-            let html = `<div><strong>Step:</strong> ${{data.step}} | <strong>Turn:</strong> ${{state.turn}}</div>`;
-            html += `<div><strong>Acting Player:</strong> Player ${{data.acting_player + 1}}</div>`;
-            if (data.is_ai) html += `<div style="color:red">AI Decision Node</div>`;
-            if (data.is_repeated) {{
-                html += `<div style="color:orange"><strong>Repeated State</strong> (Pruned)</div>`;
-                html += `<button onclick="jumpToNode(${{data.repeated_node_id}})" style="margin-top:5px; padding:5px; cursor:pointer;">Jump to Original</button>`;
-            }}
-            
-            html += '<div class="board">';
-            state.players.forEach((p, i) => {{
-                html += `<div class="player-area">
-                    <strong>Player ${{i+1}} (Points: ${{state.points[i]}})</strong><br>
-                    Deck: ${{p.deck_size}} | Discard: ${{p.discard_pile_size}}<br>
-                    <div class="zone">Active: ${{renderCard(p.active)}}</div>
-                    <div class="zone">Bench: ${{p.bench.map(renderCard).join('')}}</div>
-                    <div class="zone">Hand (${{p.hand.length}}): ${{p.hand.map(renderCard).join('')}}</div>
-                </div>`;
-            }});
-            html += '</div>';
-            display.innerHTML = html;
-        }}
-
-        function renderCard(card) {{
-            if (!card) return '<div class="card-container" style="border:1px dashed #ccc;height:56px;"></div>';
-            return `<div class="card-container">
-                <img src="${{card.url}}" class="card-img" title="${{card.name}}">
-                ${{card.hp ? `<div class="card-stats">HP:${{card.hp}}</div>` : ''}}
-            </div>`;
-        }}
-    </script>
-</body>
-</html>
-    """
-    with open(output_path, "w") as f: f.write(html_content)
+    def close(self):
+        self.conn.close()
 
 def main():
     args = parse_args()
@@ -330,6 +238,7 @@ def main():
     if checkpoint_data:
         params = checkpoint_data['params']
         logging.info("Checkpoint parameters loaded.")
+        del checkpoint_data # Free memory
     
     jit_apply = jax.jit(network.apply) if not args.disable_jit else network.apply
 
@@ -344,7 +253,7 @@ def main():
 
     # Tree Search
     node_id_counter = 0
-    visited_states = {} # state_key -> node_id
+    # visited_states = {} # Removed for memory optimization
 
     # Optimized key generation using tuples instead of JSON
     def get_fast_state_key(state_raw, pending_chance):
@@ -407,124 +316,155 @@ def main():
             pending_chance
         )
 
-    def explore(state, depth, step, action_name):
+    db = TreeStorage(args.output)
+    logging.info(f"Initialized SQLite database at {args.output}")
+
+    def explore_iterative(initial_state, max_depth):
         nonlocal node_id_counter
-        node_id_counter += 1
+        unique_states_counter = 0
+        # Stack items: (state, depth, step, action_name, parent_id)
+        # parent_id is None for Root
+        stack = [(initial_state, 0, 0, "Root", None)]
         
-
-        
-        # 1. Generate Fast Key (Optimization: Avoid extract_state_info/json.dumps for visited check)
-        state_raw = state.rust_game.get_state()
-        pending_chance = None
-        if hasattr(state, "_pending_stochastic_action") and state._pending_stochastic_action is not None:
-            pending_chance = state._pending_stochastic_action
+        while stack:
+            state, depth, step, action_name, parent_id = stack.pop()
             
-        state_key = get_fast_state_key(state_raw, pending_chance)
+            node_id_counter += 1
+            current_node_id = node_id_counter
+            
+            # 1. Generate Fast Key
+            state_raw = state.rust_game.get_state()
+            pending_chance = None
+            if hasattr(state, "_pending_stochastic_action") and state._pending_stochastic_action is not None:
+                pending_chance = state._pending_stochastic_action
+                
+            state_key = get_fast_state_key(state_raw, pending_chance)
+            state_hash = hash(state_key)
 
-        # 2. Check Repeated
-        if state_key in visited_states:
-            # For repeated nodes, we don't need full state info
-            return {
-                "id": node_id_counter,
-                "action_name": action_name + " (Dup)",
+            # 2. Check Repeated (Query DB)
+            existing_id = db.check_visited(state_hash)
+            
+            is_repeated = False
+            repeated_id = None
+            
+            if existing_id is not None:
+                is_repeated = True
+                repeated_id = existing_id
+                # Even if repeated, we add a node to represent this instance in the tree (as a leaf/dup)
+                # But we DON'T add to stack (prune)
+            else:
+                unique_states_counter += 1
+            
+            # 3. Extract Info (only if not repeated, or we want to show it? Current logic showed it as Dup node)
+            # To save memory/time, maybe don't extract full state for Dup?
+            state_info = None
+            if not is_repeated:
+                state_info = extract_state_info(state_raw)
+                if pending_chance is not None:
+                    state_info["_pending_chance"] = pending_chance
+
+            node_data = {
+                "id": current_node_id,
+                "action_name": action_name + (" (Dup)" if is_repeated else ""),
                 "step": step,
                 "acting_player": state.current_player(),
-                "children": [],
                 "is_terminal": state.is_terminal(),
-                "is_repeated": True,
-                "repeated_node_id": visited_states[state_key],
-                "state": None # Optimization: Skip state extraction for repeated nodes
+                "is_repeated": is_repeated,
+                "repeated_node_id": repeated_id,
+                "state": state_info
             }
-        
-        visited_states[state_key] = node_id_counter
+            
+            # Chance node check
+            if state.is_chance_node():
+               node_data["is_chance"] = True
 
-        # 3. Extract Full Info (Only for new nodes)
-        state_info = extract_state_info(state_raw)
-        if pending_chance is not None:
-            state_info["_pending_chance"] = pending_chance
+            # AI check
+            if not state.is_chance_node() and not state.is_terminal() and state.current_player() == args.ai_player:
+               node_data["is_ai"] = True
 
-        node = {
-            "id": node_id_counter,
-            "action_name": action_name,
-            "step": step,
-            "acting_player": state.current_player(),
-            "children": [],
-            "is_terminal": state.is_terminal(),
-            "state": state_info
-        }
+            # Insert Node
+            db.add_node(node_data, state_hash=state_hash)
+            
+            # Insert Edge (if parent exists)
+            if parent_id is not None:
+                db.add_edge(parent_id, current_node_id, action_name)
 
-        if state.is_terminal() or depth >= args.max_depth:
-            return node
+            # Pruning conditions
+            if is_repeated or state.is_terminal() or depth >= max_depth:
+                if node_id_counter % 1000 == 0: db.commit()
+                continue
 
-        if state.is_chance_node():
-            node["is_chance"] = True
-            outcomes = state.chance_outcomes()
-            if args.explore_all_chance:
-                for action, prob in outcomes:
+            # 4. Generate Children
+            if state.is_chance_node():
+                outcomes = state.chance_outcomes()
+                # Determine children to push
+                # Note: Stack is LIFO, so if we want consistent order, push in reverse?
+                # Doesn't matter much for functionality
+                
+                if args.explore_all_chance:
+                    for action, prob in outcomes:
+                        child_state = state.clone()
+                        child_state.apply_action(action)
+                        stack.append((child_state, depth + 1, step + 1, f"Chance (p={prob:.2f})", current_node_id))
+                else:
+                    action_list, prob_list = zip(*outcomes)
+                    action = np.random.choice(action_list, p=prob_list)
                     child_state = state.clone()
                     child_state.apply_action(action)
-                    node["children"].append(explore(child_state, depth + 1, step + 1, f"Chance (p={prob:.2f})"))
-            else:
-                # Sample one chance outcome to avoid explosion
-                action_list, prob_list = zip(*outcomes)
-                action = np.random.choice(action_list, p=prob_list)
-                child_state = state.clone()
-                child_state.apply_action(action)
-                node["children"].append(explore(child_state, depth + 1, step + 1, "Chance (Sampled)"))
-        else:
-            curr_p = state.current_player()
-            if curr_p == args.ai_player:
-                node["is_ai"] = True
-                logits = predict(state)
-                action = int(np.argmax(logits))
-                child_state = state.clone()
-                child_state.apply_action(action)
-                node["children"].append(explore(child_state, depth + 1, step + 1, state.action_to_string(curr_p, action)))
-            else:
+                    stack.append((child_state, depth + 1, step + 1, "Chance (Sampled)", current_node_id))
 
-                legal_actions = state.legal_actions()
-                
-                # Filter 'Place' actions to bench to reduce branching factor
-                # Pattern: Place(CardName, Index)
-                # We want to keep only the minimum Index for each CardName where Index >= 1 (Bench)
-                actions_to_process = []
-                bench_place_groups = {} # card_name -> list of (index, action_id, action_str)
-
-                for action in legal_actions:
+            else:
+                curr_p = state.current_player()
+                if curr_p == args.ai_player:
+                    # AI Trace
+                    logits = predict(state)
+                    action = int(np.argmax(logits))
+                    child_state = state.clone()
+                    child_state.apply_action(action)
                     action_str = state.action_to_string(curr_p, action)
-                    match = place_pattern.match(action_str)
-                    if match:
-                        card_name = match.group(1)
-                        index = int(match.group(2))
-                        if index >= 1: # Bench indices are 1, 2, 3
-                            if card_name not in bench_place_groups:
-                                bench_place_groups[card_name] = []
-                            bench_place_groups[card_name].append((index, action, action_str))
-                            continue
+                    stack.append((child_state, depth + 1, step + 1, action_str, current_node_id))
+                else:
+                    # Opponent (Explore all legal actions)
+                    legal_actions = state.legal_actions()
+                    actions_to_process = []
+                    bench_place_groups = {} 
+
+                    for action in legal_actions:
+                        action_str = state.action_to_string(curr_p, action)
+                        match = place_pattern.match(action_str)
+                        if match:
+                            card_name = match.group(1)
+                            index = int(match.group(2))
+                            if index >= 1: 
+                                if card_name not in bench_place_groups:
+                                    bench_place_groups[card_name] = []
+                                bench_place_groups[card_name].append((index, action, action_str))
+                                continue
+                        
+                        actions_to_process.append((action, action_str))
                     
-                    actions_to_process.append((action, action_str))
-                
-                # Add back the min index bench placements
-                for card_name, group in bench_place_groups.items():
-                    # Sort by index and pick first (smallest index)
-                    group.sort(key=lambda x: x[0])
-                    best = group[0]
-                    actions_to_process.append((best[1], best[2]))
-                
-                # Process filtered actions
-                for action, action_str in actions_to_process:
-                    child_state = state.clone()
-                    child_state.apply_action(action)
-                    node["children"].append(explore(child_state, depth + 1, step + 1, action_str))
-        
-        return node
+                    for card_name, group in bench_place_groups.items():
+                        group.sort(key=lambda x: x[0])
+                        best = group[0]
+                        actions_to_process.append((best[1], best[2]))
+                    
+                    for action, action_str in actions_to_process:
+                        child_state = state.clone()
+                        child_state.apply_action(action)
+                        stack.append((child_state, depth + 1, step + 1, action_str, current_node_id))
+
+
+            if node_id_counter % 1000 == 0:
+                print(f"Nodes processed: {node_id_counter} (Unique States: {unique_states_counter}), Stack size: {len(stack)}")
+                db.commit()
 
     logging.info("Starting tree exploration...")
     initial_state = game.new_initial_state()
-    root_node = explore(initial_state, 0, 0, "Root")
+    explore_iterative(initial_state, args.max_depth)
     
-    logging.info(f"Generating HTML: {args.output}")
-    generate_html(root_node, args.output)
+    db.commit()
+    db.close()
+    logging.info(f"Tree exploration finished. Data saved to {args.output}")
 
 if __name__ == "__main__":
     main()
