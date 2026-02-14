@@ -368,25 +368,35 @@ def main():
                 if active.poisoned: status.append(1)
                 if active.asleep: status.append(2)
                 if active.paralyzed: status.append(3)
-                tool_id = active.attached_tool.id if hasattr(active, "attached_tool") and active.attached_tool else None
+                tool_id = active.attached_tool.id if hasattr(active, "attached_tool") and active.attached_tool else ""
                 active_info = (active.card.id, active.remaining_hp, energy_names, tuple(status), tool_id)
             
-            # Bench
-            bench_info = []
+            # Bench (sorted for canonicalization)
+            bench_list = []
             for mon in state_raw.get_bench_pokemon(p):
                 if mon:
                     energy_names = tuple(sorted([e.name for e in mon.attached_energy]))
-                    tool_id = mon.attached_tool.id if hasattr(mon, "attached_tool") and mon.attached_tool else None
-                    bench_info.append((mon.card.id, mon.remaining_hp, energy_names, tool_id))
-                else:
-                    bench_info.append(None)
-                    
+                    tool_id = mon.attached_tool.id if hasattr(mon, "attached_tool") and mon.attached_tool else ""
+                    bench_list.append((mon.card.id, mon.remaining_hp, energy_names, tool_id))
+            bench_info = tuple(sorted(bench_list))
+            
+            # Trash (sorted ids for canonicalization)
+            # Use get_discard_pile if available, otherwise just size (fallback)
+            if hasattr(state_raw, "get_discard_pile"):
+                try:
+                    trash_ids = tuple(sorted([c.id for c in state_raw.get_discard_pile(p)]))
+                except Exception:
+                     # Fallback if method exists but fails (e.g. wrong binding sig)
+                    trash_ids = (state_raw.get_discard_pile_size(p),)
+            else:
+                trash_ids = (state_raw.get_discard_pile_size(p),)
+
             players_info.append((
                 hand_ids,
                 active_info,
-                tuple(bench_info),
+                bench_info,
                 state_raw.get_deck_size(p),
-                state_raw.get_discard_pile_size(p),
+                trash_ids,
                 tuple(state_raw.points) if hasattr(state_raw.points, '__iter__') else state_raw.points
             ))
 
