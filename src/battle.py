@@ -19,6 +19,20 @@ from src.models import DeckGymNet, TransformerNet, CardTransformerNet
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
+# Compatibility fix for loading checkpoints from newer optax versions
+try:
+    import optax
+except ImportError:
+    optax = None
+
+if optax is not None:
+    # If optax is installed but transforms is missing (e.g. optax 0.1.9),
+    # alias it to optax top-level which has MultiStepsState etc.
+    if 'optax.transforms' not in sys.modules:
+        sys.modules['optax.transforms'] = optax
+    if 'optax.transforms._accumulation' not in sys.modules:
+        sys.modules['optax.transforms._accumulation'] = optax
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Run a battle between two agents.")
     parser.add_argument("--checkpoint", type=str, default=None, help="Path to checkpoint file (optional). If not provided, uses random weights.")

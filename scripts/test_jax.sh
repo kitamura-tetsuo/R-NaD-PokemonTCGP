@@ -1,8 +1,7 @@
 #!/bin/bash
 source .venv/bin/activate
-export PYTHONPATH=$(pwd)
 
-# Determine library paths for LD_LIBRARY_PATH (same as train.sh)
+# Determine library paths for LD_LIBRARY_PATH (Copied from train.sh)
 export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$(python -c "import nvidia.cudnn; print(nvidia.cudnn.__path__[0])")/lib
 export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$(python -c "import nvidia.cublas; print(nvidia.cublas.__path__[0])")/lib
 export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$(python -c "import nvidia.cuda_nvcc; print(nvidia.cuda_nvcc.__path__[0])")/lib
@@ -12,12 +11,9 @@ export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$(python -c "import nvidia.cufft; print(
 export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$(python -c "import nvidia.cusolver; print(nvidia.cusolver.__path__[0])")/lib
 export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$(python -c "import nvidia.cuda_cupti; print(nvidia.cuda_cupti.__path__[0])")/lib
 export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$(python -c "import nvidia.nccl; print(nvidia.nccl.__path__[0])")/lib
-export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$(python -c "import nvidia.cusparse; print(nvidia.cusparse.__path__[0])")/lib
-python src/battle.py \
-    --checkpoint "checkpoints_sample/checkpoint_transformer_2.pkl" \
-    --deck_id_1 "train_data/8acd216f.txt" \
-    --deck_id_2 "train_data/ab2bf611.txt" \
-    --device "cpu" \
-    "$@"
 
-#     --checkpoint "saved_model/74e1ccf674b2b3504a0112d84b4601bb741968be/199" \
+# Memory allocation settings
+export XLA_PYTHON_CLIENT_PREALLOCATE=false
+export XLA_PYTHON_CLIENT_ALLOCATOR=platform
+
+python -X faulthandler test_jax_gpu.py
