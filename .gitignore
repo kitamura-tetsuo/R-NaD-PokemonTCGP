@@ -16,3 +16,5 @@ battle.html
 
 # Saved model
 saved_model/*
+tree.sqlite
+tree.sqlite-journal

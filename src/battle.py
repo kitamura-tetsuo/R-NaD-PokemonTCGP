@@ -2,6 +2,7 @@ import argparse
 import sys
 import os
 import json
+import re
 import random
 import datetime
 import logging
@@ -733,27 +734,71 @@ def main():
             # Mask illegal actions
             logits[~legal_mask] = -1e9
 
-            # Simple greedy or sample? Let's sample to be interesting
+            # Calculate probabilities
             probs = jax.nn.softmax(logits)
             probs = np.array(probs)
-            probs = probs / probs.sum() # Renormalize just in case
+            probs = probs / probs.sum()
 
-            action = np.random.choice(len(probs), p=probs)
-            action_name = state.action_to_string(current_player, action)
+            # Greedy / ArgMax with Bench Aggregation
 
-            # Get top 3 alternative candidates
-            sorted_indices = np.argsort(probs)[::-1]
-            for idx in sorted_indices:
-                if probs[idx] <= 0:
+            candidates = {}  # Map "Display Name" -> {prob: p, actions: [idx]}
+            place_pattern = re.compile(r"^Place\((.*), (\d+)\)$")
+
+            for idx in legal_actions:
+                prob = float(probs[idx])
+                if prob <= 0:
                     continue
-                cand_name = state.action_to_string(current_player, idx)
 
-                # Add to all candidates
-                all_candidates.append({"name": cand_name, "prob": float(probs[idx])})
+                action_str = state.action_to_string(current_player, idx)
+                match = place_pattern.match(action_str)
+                
+                key = action_str
+                if match:
+                    card_name = match.group(1)
+                    pos = int(match.group(2))
+                    # Group Place(Card, 1), Place(Card, 2), Place(Card, 3) as "Bench"
+                    if 1 <= pos <= 3:
+                        key = f"Place({card_name}, Bench)"
+                
+                if key not in candidates:
+                    candidates[key] = {"prob": 0.0, "actions": []}
+                
+                candidates[key]["prob"] += prob
+                candidates[key]["actions"].append(idx)
 
-                # Add to top candidates (skipping selected action)
-                if idx != action and len(top_candidates) < 3:
-                    top_candidates.append({"name": cand_name, "prob": float(probs[idx])})
+            # Flatten to list for sorting
+            all_candidates_list = []
+            for name, data in candidates.items():
+                all_candidates_list.append({
+                    "name": name,
+                    "prob": data["prob"],
+                    "actions": sorted(data["actions"]) # Sort to be deterministic
+                })
+            
+            # Sort by probability descending
+            all_candidates_list.sort(key=lambda x: x["prob"], reverse=True)
+
+            if not all_candidates_list:
+                # Should not happen if game is not terminal
+                logging.warning("No legal candidates found!")
+                break
+
+            # Select the best action
+            best_choice = all_candidates_list[0]
+            action_name = best_choice["name"]
+            
+            # If multiple actual actions correspond to this choice (e.g. Place 1, Place 2), pick the first one
+            action = best_choice["actions"][0]
+
+            # Populate info lists
+            # all_candidates
+            all_candidates = [{"name": c["name"], "prob": c["prob"]} for c in all_candidates_list]
+
+            # top_candidates (alternatives)
+            # We skip the selected one (index 0)
+            for i in range(1, min(4, len(all_candidates_list))):
+                c = all_candidates_list[i]
+                top_candidates.append({"name": c["name"], "prob": c["prob"]})
 
             state.apply_action(action)
 
