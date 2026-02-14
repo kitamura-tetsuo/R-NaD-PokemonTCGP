@@ -348,6 +348,11 @@ def main():
 
     # Optimized key generation using tuples instead of JSON
     def get_fast_state_key(state_raw, pending_chance):
+        if pending_chance is not None and isinstance(pending_chance, tuple) and len(pending_chance) > 1:
+            # Ensure probabilities list is a tuple for hashing
+            if isinstance(pending_chance[1], list):
+                pending_chance = (pending_chance[0], tuple(pending_chance[1]))
+
         players_info = []
         for p in [0, 1]:
             # Hand (sorted ids for canonicalization)
