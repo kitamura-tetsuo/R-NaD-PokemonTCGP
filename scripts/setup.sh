@@ -111,6 +111,26 @@ else
     echo "deckgym-core directory is empty or missing. Skipping installation."
 fi
 
+# --- Fix for libcublas.so missing ---
+# nvidia-cublas-cu11 installs libcublas.so.11 but some libraries look for libcublas.so
+CUBLAS_LIB_DIR=$(python -c "import nvidia.cublas; import os; print(os.path.join(nvidia.cublas.__path__[0], 'lib'))")
+if [ -d "$CUBLAS_LIB_DIR" ]; then
+    if [ ! -f "$CUBLAS_LIB_DIR/libcublas.so" ]; then
+        echo "Creating symlink for libcublas.so..."
+        ln -sf "$CUBLAS_LIB_DIR/libcublas.so.11" "$CUBLAS_LIB_DIR/libcublas.so"
+    fi
+fi
+
+# --- Fix for libcudart.so missing ---
+# nvidia-cuda-runtime-cu11 installs libcudart.so.11.0 but some libraries look for libcudart.so
+CUDART_LIB_DIR=$(python -c "import nvidia.cuda_runtime; import os; print(os.path.join(nvidia.cuda_runtime.__path__[0], 'lib'))")
+if [ -d "$CUDART_LIB_DIR" ]; then
+    if [ ! -f "$CUDART_LIB_DIR/libcudart.so" ]; then
+        echo "Creating symlink for libcudart.so..."
+        ln -sf "$CUDART_LIB_DIR/libcudart.so.11.0" "$CUDART_LIB_DIR/libcudart.so"
+    fi
+fi
+
 uv run python scripts/prepare_card_embeddings.py
 
 echo "Setup complete. Activate environment with: source .venv/bin/activate"

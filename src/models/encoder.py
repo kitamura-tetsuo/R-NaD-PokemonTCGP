@@ -32,7 +32,9 @@ class LogicVectorEncoder:
             # New types for expanded vectorization
             "ProbabilisticDamage", "DrawAndDamage", "FlipUntilTailsDamage",
             "ChargeFromEnergyZone", "KnockBack", "DirectDamageIfDamaged",
-            "DiscardAllEnergyOfType", "ExtraDamageIfCondition", "DiscardOpponentDeck"
+            "DiscardAllEnergyOfType", "ExtraDamageIfCondition", "DiscardOpponentDeck",
+            "ChargeYourTypeAnyWay", "DoublePunchingFamily", "DirectDamagePerEnergyOnTarget",
+            "UseOpponentActiveAttack", "DiscardHandCard", "ReturnPokemonToHand"
         ]
         self.target_scopes = [
             "SelfActive", "SelfBench", "SelfBoard", 
@@ -147,7 +149,9 @@ class TrainerVectorEncoder:
         self.mechanic_types = [
             "EvolutionAcceleration", "Heal", "Draw", "EnergyAttachment", 
             "Switch", "Search", "DamageBoost", "RetreatCostReduction",
-            "ShuffleHandInDraw", "AttachTool", "PlaceFossil", "MultiEffect"
+            "ShuffleHandInDraw", "AttachTool", "PlaceFossil", "MultiEffect", "DiscardTool",
+            "ProbabilisticShuffleHandInDraw", "CoinFlipModifier", "GlobalDamageBoost",
+            "GlobalRetreatCostReduction", "GlobalOnPlayDamage", "ReturnPokemonToHand"
         ]
         self.target_scopes = [
             "SelfActive", "SelfBench", "SelfBoard", 
@@ -220,7 +224,9 @@ class AbilityVectorEncoder:
             # New types for expanded vectorization
             "ApplyStatus", "EnergyAttachment", "SwitchSelfWithBench", "ForcedSwitchActive",
             "Heal", "MoveEnergy", "DamageOpponent", "MoveDamage",
-            "ChargeSelfAndEndTurn", "Search"
+            "ChargeSelfAndEndTurn", "Search",
+            "OnEnergyAttachDamage", "NoRetreatCost", "Safeguard", "IncreasedPoisonDamage",
+            "DrawAtEndOfTurn", "ShutDownAbilities"
         ]
         self.energy_types = [
             "Grass", "Fire", "Water", "Lightning", "Psychic",

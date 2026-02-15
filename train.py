@@ -4,6 +4,26 @@ import logging
 import deckgym_openspiel
 import os
 import pickle
+import optax
+import types
+
+# Comprehensive shim for older checkpoints
+def shim_optax():
+    if 'optax.transforms' not in sys.modules:
+        m = types.ModuleType('optax.transforms')
+        sys.modules['optax.transforms'] = m
+        m_acc = types.ModuleType('optax.transforms._accumulation')
+        sys.modules['optax.transforms._accumulation'] = m_acc
+        
+        # Copy everything from optax to the shimmed modules
+        # This helps pickle find classes like MultiStepsState
+        for name in dir(optax):
+            val = getattr(optax, name)
+            setattr(m, name, val)
+            setattr(m_acc, name, val)
+
+shim_optax()
+
 from src.rnad import train_loop, RNaDConfig, LeagueConfig, find_latest_checkpoint
 from src.training.experiment import ExperimentManager
 
