@@ -35,3 +35,4 @@ nvidia-nccl-cu11==2.21.5
 nvidia-cusparse-cu11==11.7.5.86
 nvidia-cudnn-cu11==8.6.0.163
 streamlit
+tensorflow-cpu

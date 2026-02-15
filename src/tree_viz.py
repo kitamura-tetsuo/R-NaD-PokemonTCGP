@@ -47,6 +47,9 @@ def parse_args():
     parser.add_argument("--max_depth", type=int, default=5, help="Maximum depth of the tree.")
     parser.add_argument("--ai_player", type=int, default=0, help="Which player is controlled by AI (0 or 1).")
     parser.add_argument("--explore_all_chance", action="store_true", help="Whether to explore all chance outcomes (can explode).")
+    parser.add_argument("--mined_source", type=str, default=None, help="Path to mined_data.jsonl to load state from.")
+    parser.add_argument("--mined_index", type=int, default=-1, help="Index of the mined state to load (default: last one).")
+    parser.add_argument("--explore_ai_moves", action="store_true", help="If true, expand all legal moves for AI instead of just argmax.")
     return parser.parse_args()
 
 def get_card_image_url(card_id):
@@ -261,6 +264,37 @@ def main():
     emb_path = "card_embeddings.npy"
     embedding_matrix = jnp.array(np.load(emb_path)) if os.path.exists(emb_path) else jnp.zeros((10000, 26))
 
+    # Load Mined Data if specified
+    mined_history = None
+    if args.mined_source:
+        if not os.path.exists(args.mined_source):
+            logging.error(f"Mined source file not found: {args.mined_source}")
+            return
+
+        with open(args.mined_source, 'r') as f:
+            lines = f.readlines()
+            if not lines:
+                logging.error("Mined source file is empty.")
+                return
+            
+            try:
+                if args.mined_index >= len(lines):
+                     logging.warning(f"Index {args.mined_index} out of range (len={len(lines)}), using last entry.")
+                     idx = -1
+                else:
+                     idx = args.mined_index
+
+                data = json.loads(lines[idx])
+                args.deck_id_1 = data.get("deck_id_1", args.deck_id_1)
+                args.deck_id_2 = data.get("deck_id_2", args.deck_id_2)
+                args.seed = data.get("seed", args.seed)
+                mined_history = data.get("history", [])
+                
+                logging.info(f"Loaded mined state (idx={idx}): seed={args.seed}, history_len={len(mined_history)}")
+            except json.JSONDecodeError:
+                logging.error("Failed to decode JSON from mined source.")
+                return
+
     config = RNaDConfig(deck_id_1=args.deck_id_1, deck_id_2=args.deck_id_2)
     game = pyspiel.load_game("deckgym_ptcgp", {
         "deck_id_1": config.deck_id_1, "deck_id_2": config.deck_id_2,
@@ -416,8 +450,8 @@ def main():
 
             else:
                 curr_p = state.current_player()
-                if curr_p == args.ai_player:
-                    # AI Trace
+                if curr_p == args.ai_player and not args.explore_ai_moves:
+                    # AI Trace (Greedy / Argmax)
                     logits = predict(state)
                     action = int(np.argmax(logits))
                     child_state = state.clone()
@@ -425,7 +459,7 @@ def main():
                     action_str = state.action_to_string(curr_p, action)
                     stack.append((child_state, depth + 1, step + 1, action_str, current_node_id))
                 else:
-                    # Opponent (Explore all legal actions)
+                    # Opponent OR AI Exploration (Explore all legal actions)
                     legal_actions = state.legal_actions()
                     actions_to_process = []
                     bench_place_groups = {} 
@@ -461,6 +495,12 @@ def main():
 
     logging.info("Starting tree exploration...")
     initial_state = game.new_initial_state()
+    if mined_history:
+        logging.info("Replaying history...")
+        for action in mined_history:
+            initial_state.apply_action(action)
+        logging.info(f"Replay complete, current turn: {initial_state.rust_game.get_state().turn_count}")
+
     explore_iterative(initial_state, args.max_depth)
     
     db.commit()

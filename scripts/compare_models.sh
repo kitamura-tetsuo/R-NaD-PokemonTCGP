@@ -14,24 +14,10 @@ export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$(python -c "import nvidia.cuda_cupti; p
 export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$(python -c "import nvidia.nccl; print(nvidia.nccl.__path__[0])")/lib
 export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$(python -c "import nvidia.cusparse; print(nvidia.cusparse.__path__[0])")/lib
 
-python src/miner.py \
-    --checkpoint "checkpoints/checkpoint_605.pkl" \
-    --league_decks_student "train_data/teacher.csv" \
-    --league_decks_teacher "train_data/teacher.csv" \
-    --device "cpu" \
-    --max_depth 7 \
-    "$@"
-
-python src/tree_viz.py \
-    --mined_source mined_data.jsonl \
-    --mined_index -1 \
-    --max_depth 10 \
-    --output analysis.sqlite
-
-streamlit run src/app.py -- --db_path analysis.sqlite
-
-# python src/distill.py \
-#     --checkpoint_dir "checkpoints" \
-#     --data_file "mined_data.jsonl" \
-#     --device "cpu" \
-#     "$@"
+python src/compare_models.py \
+  --model1 checkpoints/checkpoint_600.pkl \
+  --model2 checkpoints/checkpoint_605.pkl \
+  --n_games 10 \
+  --league_decks train_data/validate.csv \
+  --device cpu \
+  --db_path matches.db

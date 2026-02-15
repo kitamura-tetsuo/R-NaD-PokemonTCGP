@@ -60,7 +60,7 @@ python train.py \
   --update_batch_size 1 \
   --num_workers 8 \
   --max_steps 20000 \
-  --save_interval 10 \
+  --save_interval 1 \
   --log_interval 1 \
   --test_interval -1 \
   --test_games 4 \

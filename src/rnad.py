@@ -268,6 +268,58 @@ def v_trace(
 
     return vs, pg_advantages
 
+def merge_leaf(t_leaf, s_leaf):
+    """Merges a single leaf parameter, handling shape mismatch by slicing/padding."""
+    if not hasattr(t_leaf, 'shape') or not hasattr(s_leaf, 'shape'):
+         return s_leaf
+         
+    if t_leaf.shape == s_leaf.shape:
+        return s_leaf
+        
+    logging.warning(f"Shape mismatch: target {t_leaf.shape}, source {s_leaf.shape}. Merging...")
+    
+    out = t_leaf
+    ndim = out.ndim
+    if s_leaf.ndim != ndim:
+         logging.warning(f"Rank mismatch: {t_leaf.shape} vs {s_leaf.shape}. Returning target implementation.")
+         return t_leaf
+         
+    s_slice = tuple(slice(0, min(dc, do)) for dc, do in zip(out.shape, s_leaf.shape))
+    try:
+         out = out.at[s_slice].set(s_leaf[s_slice])
+         return out
+    except Exception as e:
+         logging.error(f"Merge failed: {e}. Returning target.")
+         return t_leaf
+
+def merge_recursive(target, source):
+    """Recursively merges target and source parameters/state."""
+    if isinstance(target, dict) and isinstance(source, dict):
+        out = {}
+        for k, v_t in target.items():
+            if k in source:
+                out[k] = merge_recursive(v_t, source[k])
+            else:
+                out[k] = v_t 
+        return out
+    
+    # Handle NamedTuple and active tuples/lists
+    if isinstance(target, (list, tuple)) and isinstance(source, (list, tuple)):
+         # Handle NamedTuple
+         if hasattr(target, '_fields') and hasattr(source, '_fields'):
+             if type(target) == type(source):
+                  return type(target)(*(merge_recursive(getattr(target, f), getattr(source, f)) for f in target._fields))
+         
+         if len(target) != len(source):
+              return target
+         
+         return type(target)(*(merge_recursive(t, s) for t, s in zip(target, source)))
+
+    if hasattr(target, 'shape') and hasattr(source, 'shape'):
+         return merge_leaf(target, source)
+         
+    return source
+
 def loss_fn(params, fixed_params, batch, apply_fn, config: RNaDConfig, alpha_rnad: float):
     obs = batch['obs'] # (T, B, dim)
     mask = batch.get('mask') # (T, B, action_dim)
@@ -447,15 +499,32 @@ class RNaDLearner:
     def load_checkpoint(self, path: str) -> Tuple[int, Dict[str, Any]]:
         with open(path, 'rb') as f:
             data = pickle.load(f)
-        self.params = data['params']
-        self.fixed_params = data['fixed_params']
-        self.opt_state = data['opt_state']
+            
+        logging.info(f"Loading checkpoint from {path}...")
+        
+        # 1. Initialize fresh params/opt_state to get correct shapes/structure for current code
+        rng = jax.random.PRNGKey(0)
+        dummy_obs = jnp.zeros((1, *self.obs_shape))
+        dummy_mask = jnp.zeros((1, self.num_actions))
+        
+        current_params = self.network.init(rng, dummy_obs, mask=dummy_mask)
+        current_opt_state = self.optimizer.init(current_params)
+        
+        # 2. Merge loaded params into current params
+        self.params = merge_recursive(current_params, data['params'])
+        self.fixed_params = merge_recursive(current_params, data['fixed_params'])
+        
+        # 3. Merge opt_state
+        try:
+             self.opt_state = merge_recursive(current_opt_state, data['opt_state'])
+        except Exception as e:
+             logging.warning(f"Failed to merge opt_state: {e}. Resetting optimizer state.")
+             self.opt_state = current_opt_state
+             
         step = data['step']
         metadata = data.get('metadata', {})
-        # We generally trust the loaded config to match roughly or ignore it,
-        # or we could assert config compatibility.
-        # For now, we assume the user knows what they are doing.
-        logging.info(f"Checkpoint loaded from {path}, resuming from step {step}")
+        
+        logging.info(f"Checkpoint loaded, resuming from step {step}")
         return step, metadata
 
     def init(self, key):
@@ -1064,6 +1133,12 @@ def train_loop(config: RNaDConfig, experiment_manager: Optional[Any] = None, che
         step_time = end_time - start_time
         sps = total_samples / (step_time + 1e-6)
         metrics['sps'] = sps
+        
+        # Log config values as metrics for tuning tracking
+        metrics['batch_size'] = float(config.batch_size)
+        metrics['accumulation_steps'] = float(config.accumulation_steps)
+        metrics['update_batch_size'] = float(learner.sgd_batch_size)
+        metrics['num_workers'] = float(config.num_workers)
 
         if step % config.log_interval == 0:
             logging.info(f"Step {step}: {metrics}")

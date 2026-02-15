@@ -1,8 +1,12 @@
 #!/bin/bash
-source .venv/bin/activate
-export PYTHONPATH=$(pwd)
+set -e
 
-# Determine library paths for LD_LIBRARY_PATH (same as train.sh)
+source .venv/bin/activate
+
+# Add current directory to PYTHONPATH
+export PYTHONPATH=$PYTHONPATH:.
+
+# Determine library paths for LD_LIBRARY_PATH (Critical for JAX/CUDA)
 export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$(python -c "import nvidia.cudnn; print(nvidia.cudnn.__path__[0])")/lib
 export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$(python -c "import nvidia.cublas; print(nvidia.cublas.__path__[0])")/lib
 export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$(python -c "import nvidia.cuda_nvcc; print(nvidia.cuda_nvcc.__path__[0])")/lib
@@ -14,24 +18,16 @@ export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$(python -c "import nvidia.cuda_cupti; p
 export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$(python -c "import nvidia.nccl; print(nvidia.nccl.__path__[0])")/lib
 export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$(python -c "import nvidia.cusparse; print(nvidia.cusparse.__path__[0])")/lib
 
-python src/miner.py \
-    --checkpoint "checkpoints/checkpoint_605.pkl" \
-    --league_decks_student "train_data/teacher.csv" \
-    --league_decks_teacher "train_data/teacher.csv" \
+# Memory allocation settings
+export XLA_PYTHON_CLIENT_PREALLOCATE=false
+export XLA_PYTHON_CLIENT_ALLOCATOR=platform
+
+echo "Starting Distillation..."
+python src/distill.py \
+    --checkpoint_dir "checkpoints" \
+    --data_file "mined_data.jsonl" \
+    --batch_size 4 \
+    --accumulation_steps 8 \
+    --update_batch_size 2 \
     --device "cpu" \
-    --max_depth 7 \
     "$@"
-
-python src/tree_viz.py \
-    --mined_source mined_data.jsonl \
-    --mined_index -1 \
-    --max_depth 10 \
-    --output analysis.sqlite
-
-streamlit run src/app.py -- --db_path analysis.sqlite
-
-# python src/distill.py \
-#     --checkpoint_dir "checkpoints" \
-#     --data_file "mined_data.jsonl" \
-#     --device "cpu" \
-#     "$@"

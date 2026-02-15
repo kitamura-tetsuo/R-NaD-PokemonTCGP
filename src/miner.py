@@ -364,7 +364,9 @@ class Miner:
                 if state.is_chance_node():
                     outcomes = state.chance_outcomes()
                     action_list, prob_list = zip(*outcomes)
-                    action = rng.choice(action_list, p=prob_list)
+                    prob_arr = np.array(prob_list)
+                    prob_arr /= prob_arr.sum()
+                    action = rng.choice(action_list, p=prob_arr)
                     state.apply_action(action)
                 else:
                     curr_p = state.current_player()
@@ -455,7 +457,10 @@ class Miner:
                         "model_value": v_model,
                         "reason": reason,
                         "actual_outcome": final_r,
-                        "turn": s.rust_game.get_state().turn_count
+                        "turn": s.rust_game.get_state().turn_count,
+                        "deck_id_1": d1,
+                        "deck_id_2": d2,
+                        "seed": self.config.seed + i
                     })
         
         return interesting_data
@@ -480,9 +485,12 @@ class Miner:
                     "oracle_value": float(oracle_val),
                     "model_value": float(item["model_value"]),
                     "actual_outcome": float(item["actual_outcome"]),
-                    "reasons": item["reason"]
-                    # We might want to save features for training later, 
-                    # but for now let's save metadata.
+                    "reasons": item["reason"],
+                    "state_blob": state.observation_tensor(state.current_player()),
+                    "history": state.history(),
+                    "deck_id_1": item["deck_id_1"],
+                    "deck_id_2": item["deck_id_2"],
+                    "seed": item["seed"]
                 })
         
         return results
