@@ -53,8 +53,10 @@ fi
 #   "$@"
 
 python train.py \
-  --batch_size 2 \
-  --accumulation_steps 128 \
+  --batch_size 1 \
+  --accumulation_steps 1024 \
+  --update_batch_size 1 \
+  --num_workers 8 \
   --max_steps 20000 \
   --save_interval 10 \
   --log_interval 1 \

@@ -183,6 +183,68 @@ class TreeStorage:
     def close(self):
         self.conn.close()
 
+
+# Optimized key generation using tuples instead of JSON
+def get_fast_state_key(state_raw, pending_chance):
+    if pending_chance is not None and isinstance(pending_chance, tuple) and len(pending_chance) > 1:
+        # Ensure probabilities list is a tuple for hashing
+        if isinstance(pending_chance[1], list):
+            pending_chance = (pending_chance[0], tuple(pending_chance[1]))
+
+    players_info = []
+    for p in [0, 1]:
+        # Hand (sorted ids for canonicalization)
+        hand_ids = tuple(sorted([c.id for c in state_raw.get_hand(p)]))
+        
+        # Active
+        active = state_raw.get_active_pokemon(p)
+        active_info = None
+        if active:
+            # active properties
+            energy_names = tuple(sorted([e.name for e in active.attached_energy]))
+            status = []
+            if active.poisoned: status.append(1)
+            if active.asleep: status.append(2)
+            if active.paralyzed: status.append(3)
+            tool_id = active.attached_tool.id if hasattr(active, "attached_tool") and active.attached_tool else ""
+            active_info = (active.card.id, active.remaining_hp, energy_names, tuple(status), tool_id)
+        
+        # Bench (sorted for canonicalization)
+        bench_list = []
+        for mon in state_raw.get_bench_pokemon(p):
+            if mon:
+                energy_names = tuple(sorted([e.name for e in mon.attached_energy]))
+                tool_id = mon.attached_tool.id if hasattr(mon, "attached_tool") and mon.attached_tool else ""
+                bench_list.append((mon.card.id, mon.remaining_hp, energy_names, tool_id))
+        bench_info = tuple(sorted(bench_list))
+        
+        # Trash (sorted ids for canonicalization)
+        # Use get_discard_pile if available, otherwise just size (fallback)
+        if hasattr(state_raw, "get_discard_pile"):
+            try:
+                trash_ids = tuple(sorted([c.id for c in state_raw.get_discard_pile(p)]))
+            except Exception:
+                    # Fallback if method exists but fails (e.g. wrong binding sig)
+                trash_ids = (state_raw.get_discard_pile_size(p),)
+        else:
+            trash_ids = (state_raw.get_discard_pile_size(p),)
+
+        players_info.append((
+            hand_ids,
+            active_info,
+            bench_info,
+            state_raw.get_deck_size(p),
+            trash_ids,
+            tuple(state_raw.points) if hasattr(state_raw.points, '__iter__') else state_raw.points
+        ))
+
+    return (
+        state_raw.turn_count,
+        state_raw.current_player,
+        tuple(players_info),
+        pending_chance
+    )
+
 def main():
     args = parse_args()
     if args.device == 'cpu':
@@ -254,67 +316,6 @@ def main():
     # Tree Search
     node_id_counter = 0
     # visited_states = {} # Removed for memory optimization
-
-    # Optimized key generation using tuples instead of JSON
-    def get_fast_state_key(state_raw, pending_chance):
-        if pending_chance is not None and isinstance(pending_chance, tuple) and len(pending_chance) > 1:
-            # Ensure probabilities list is a tuple for hashing
-            if isinstance(pending_chance[1], list):
-                pending_chance = (pending_chance[0], tuple(pending_chance[1]))
-
-        players_info = []
-        for p in [0, 1]:
-            # Hand (sorted ids for canonicalization)
-            hand_ids = tuple(sorted([c.id for c in state_raw.get_hand(p)]))
-            
-            # Active
-            active = state_raw.get_active_pokemon(p)
-            active_info = None
-            if active:
-                # active properties
-                energy_names = tuple(sorted([e.name for e in active.attached_energy]))
-                status = []
-                if active.poisoned: status.append(1)
-                if active.asleep: status.append(2)
-                if active.paralyzed: status.append(3)
-                tool_id = active.attached_tool.id if hasattr(active, "attached_tool") and active.attached_tool else ""
-                active_info = (active.card.id, active.remaining_hp, energy_names, tuple(status), tool_id)
-            
-            # Bench (sorted for canonicalization)
-            bench_list = []
-            for mon in state_raw.get_bench_pokemon(p):
-                if mon:
-                    energy_names = tuple(sorted([e.name for e in mon.attached_energy]))
-                    tool_id = mon.attached_tool.id if hasattr(mon, "attached_tool") and mon.attached_tool else ""
-                    bench_list.append((mon.card.id, mon.remaining_hp, energy_names, tool_id))
-            bench_info = tuple(sorted(bench_list))
-            
-            # Trash (sorted ids for canonicalization)
-            # Use get_discard_pile if available, otherwise just size (fallback)
-            if hasattr(state_raw, "get_discard_pile"):
-                try:
-                    trash_ids = tuple(sorted([c.id for c in state_raw.get_discard_pile(p)]))
-                except Exception:
-                     # Fallback if method exists but fails (e.g. wrong binding sig)
-                    trash_ids = (state_raw.get_discard_pile_size(p),)
-            else:
-                trash_ids = (state_raw.get_discard_pile_size(p),)
-
-            players_info.append((
-                hand_ids,
-                active_info,
-                bench_info,
-                state_raw.get_deck_size(p),
-                trash_ids,
-                tuple(state_raw.points) if hasattr(state_raw.points, '__iter__') else state_raw.points
-            ))
-
-        return (
-            state_raw.turn_count,
-            state_raw.current_player,
-            tuple(players_info),
-            pending_chance
-        )
 
     db = TreeStorage(args.output)
     logging.info(f"Initialized SQLite database at {args.output}")

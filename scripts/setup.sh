@@ -13,7 +13,7 @@ fi
 # Create virtual environment if not exists
 if [ ! -d ".venv" ]; then
     echo "Creating virtual environment .venv..."
-    uv venv .venv
+    uv venv .venv --python 3.11
 fi
 
 # Activate virtual environment
