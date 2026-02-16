@@ -402,6 +402,10 @@ def loss_fn(params, fixed_params, batch, apply_fn, config: RNaDConfig, alpha_rna
         clip_pg_rho_threshold=config.clip_pg_rho_threshold,
     )
 
+    jax.debug.print("vs_p1: {}", vs_p1.reshape(-1))
+    jax.debug.print("vs_p2: {}", vs_p2.reshape(-1))
+    
+
     # Value Loss (Sum of both absolute streams)
     value_loss_p1 = 0.5 * jnp.mean((jax.lax.stop_gradient(vs_p1) - v_p1) ** 2)
     value_loss_p2 = 0.5 * jnp.mean((jax.lax.stop_gradient(vs_p2) - v_p2) ** 2)
