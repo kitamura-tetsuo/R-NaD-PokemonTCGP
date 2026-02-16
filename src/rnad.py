@@ -346,21 +346,46 @@ def loss_fn(params, fixed_params, batch, apply_fn, config: RNaDConfig, alpha_rna
     log_pi_a = jnp.sum(log_probs * act_one_hot, axis=-1)
     log_pi_fixed_a = jnp.sum(fixed_log_probs * act_one_hot, axis=-1)
 
+    # Determine if it's the learner's turn
+    # learner_id is the identity of the network (who owns obs)
+    # current_player is whose turn it actually was
+    # In standard R-NaD, these are always equal if we only train on active steps.
+    # In continuous evaluation, they differ.
+    
+    # We need current_player from batch.
+    current_player = batch.get('current_player') # (T, B)
+    if current_player is None:
+        # Fallback for old behavior (assume valid steps are my turn if not specified, or all steps)
+        # But for this task we must have it.
+        # Assuming batch has it.
+        current_player = player_id # If not present, maybe we are in old mode?
+    
+    is_my_turn = (current_player == player_id) # (T, B) boolean
+
     # Regularization Penalty (applied to acting player)
-    # penalty = alpha * (log_pi - log_pi_fixed)
-    # r_reg = r - penalty
     penalty = alpha_rnad * (log_pi_a - log_pi_fixed_a)
     
     # Apply penalty to absolute rewards
     r_p1 = rew[..., 0]
     r_p2 = rew[..., 1]
     
-    # If P1 is acting, subtract penalty from r_p1. If P2 is acting, subtract from r_p2.
-    r_reg_p1 = r_p1 - jnp.where(player_id == 0, penalty, 0.0)
-    r_reg_p2 = r_p2 - jnp.where(player_id == 1, penalty, 0.0)
+    # Penalty is applied to reward ONLY if I took the action.
+    # If opponent took action, I don't pay penalty for their policy deviation.
+    # So apply penalty only where is_my_turn is True.
+    # Actually, standard R-NaD applies regulariation to the reward "received" at that step.
+    # If I didn't act, I shouldn't be regularized.
+    
+    penalty_masked = jnp.where(is_my_turn, penalty, 0.0)
+    
+    r_reg_p1 = r_p1 - jnp.where(player_id == 0, penalty_masked, 0.0)
+    r_reg_p2 = r_p2 - jnp.where(player_id == 1, penalty_masked, 0.0)
 
     # Importance Sampling Weights
     log_rho = log_pi_a - log_prob_behavior
+    
+    # If not my turn, force rho = 1.0 (log_rho = 0.0)
+    # This ensures V-trace treats off-turn steps as pure state transitions
+    log_rho = jnp.where(is_my_turn, log_rho, 0.0)
     rho = jnp.exp(log_rho)
 
     # --- Independent V-trace for P1 and P2 ---
@@ -372,18 +397,13 @@ def loss_fn(params, fixed_params, batch, apply_fn, config: RNaDConfig, alpha_rna
          bootstrap_value = jnp.zeros((B, 2))
 
     # 1. P1 Stream
-    # We pass v_p1 (T, B) and bootstrap_value[:, 0] (B,)
-    # v_trace handles concatenation internally via 'v_tp1' arg if we passed it?
-    # Our modified v_trace takes v_tm1 and v_tp1.
-    # v_tp1 for P1 stream: v_p1[1:] + bootstrap
-    
     v_p1_next = jnp.concatenate([v_p1[1:], bootstrap_value[None, :, 0]], axis=0)
     
     vs_p1, pg_adv_p1 = v_trace(
         v_tm1=v_p1,
         v_tp1=v_p1_next,
         r_t=r_reg_p1,
-        rho_t=rho, # rho is always for the acting player step
+        rho_t=rho, # Corrected rho
         gamma=config.discount_factor,
         clip_rho_threshold=config.clip_rho_threshold,
         clip_pg_rho_threshold=config.clip_pg_rho_threshold,
@@ -402,10 +422,6 @@ def loss_fn(params, fixed_params, batch, apply_fn, config: RNaDConfig, alpha_rna
         clip_pg_rho_threshold=config.clip_pg_rho_threshold,
     )
 
-    jax.debug.print("vs_p1: {}", vs_p1.reshape(-1))
-    jax.debug.print("vs_p2: {}", vs_p2.reshape(-1))
-    
-
     # Value Loss (Sum of both absolute streams)
     value_loss_p1 = 0.5 * jnp.mean((jax.lax.stop_gradient(vs_p1) - v_p1) ** 2)
     value_loss_p2 = 0.5 * jnp.mean((jax.lax.stop_gradient(vs_p2) - v_p2) ** 2)
@@ -413,18 +429,21 @@ def loss_fn(params, fixed_params, batch, apply_fn, config: RNaDConfig, alpha_rna
 
     # Policy Loss
     # We maximize the advantage of the acting player.
-    # If P1 acting, use pg_adv_p1. If P2 acting, use pg_adv_p2.
+    # But ONLY calculate policy loss if is_my_turn is True.
+    
     current_pg_adv = jnp.where(player_id == 0, pg_adv_p1, pg_adv_p2)
     
-    policy_loss = -jnp.mean(log_pi_a * jax.lax.stop_gradient(current_pg_adv))
+    # Mask policy loss
+    raw_policy_loss = -log_pi_a * jax.lax.stop_gradient(current_pg_adv)
+    policy_loss = jnp.mean(jnp.where(is_my_turn, raw_policy_loss, 0.0))
 
     # Metrics
     probs = jax.nn.softmax(logits)
     entropy = -jnp.sum(probs * log_probs, axis=-1)
-    mean_entropy = jnp.mean(entropy)
+    mean_entropy = jnp.mean(jnp.where(is_my_turn, entropy, 0.0)) # Only for active steps? Or all? Let's keep it consistent.
 
     kl = jnp.sum(probs * (log_probs - fixed_log_probs), axis=-1)
-    mean_kl = jnp.mean(kl)
+    mean_kl = jnp.mean(jnp.where(is_my_turn, kl, 0.0))
 
     # Metric variance (using P1 stream for reference)
     y_true = jax.lax.stop_gradient(vs_p1)
@@ -670,15 +689,31 @@ class RNaDLearner:
             self.config.damage_reward
         )
         
-        initial_obs, initial_current_players, initial_mask = sim.reset(
+        # Reset returns (obs_0, obs_1), cp, mask
+        (initial_obs_0, initial_obs_1), initial_current_players, initial_mask = sim.reset(
             seed=int(jax.random.randint(key, (), 0, 1000000)),
             deck_ids_1=decks_1,
             deck_ids_2=decks_2
         )
 
+        # === Assign Learner ID per Episode (0 or 1) ===
+        # Randomly assign whether the Learner network represents Player 0 or Player 1 for this game.
+        # This determines which observation stream we follow for the "Subjective Evaluation".
+        learner_ids = np.random.randint(0, 2, size=batch_size) 
+        
+        # Select initial subjective observation
+        initial_obs_0_np = np.array(initial_obs_0)
+        initial_obs_1_np = np.array(initial_obs_1)
+        
+        # Choose obs based on learner_id
+        # if learner_id=0 use obs_0, etc.
+        # Vectorized selection:
+        current_obs_learner = np.where(learner_ids[:, None, None] == 0, initial_obs_0_np, initial_obs_1_np)
+        
         # State management buffer (single)
         sb = {
-            'current_obs': np.array(initial_obs),
+            'obs_0': initial_obs_0_np,
+            'obs_1': initial_obs_1_np,
             'current_players': np.array(initial_current_players),
             'current_mask': np.array(initial_mask),
             'active_mask': np.ones(batch_size, dtype=bool),
@@ -694,77 +729,119 @@ class RNaDLearner:
             'act_buf': np.zeros((max_len, batch_size), dtype=np.int32),
             'rew_buf': np.zeros((max_len, batch_size, 2), dtype=np.float32), 
             'log_prob_buf': np.zeros((max_len, batch_size), dtype=np.float32),
-            'player_buf': np.zeros((max_len, batch_size), dtype=np.int32), # Store player ID
+            'player_buf': np.zeros((max_len, batch_size), dtype=np.int32), # This will now store LEARNER_ID
+            'current_player_buf': np.zeros((max_len, batch_size), dtype=np.int32), # This stores WHOSE TURN
             'ptrs': np.zeros(batch_size, dtype=int)
         }
 
         agent_ids = np.zeros(batch_size, dtype=int)
         if use_past_self_play:
-            agent_ids = np.random.randint(0, 2, size=batch_size)
+            # If using past self play, we need to know if the opponent is the past model
+            # Let's say learner_id always uses `self.params`.
+            # Opponent uses `past_params`.
+            # If current_player == learner_id -> self.params.
+            # If current_player != learner_id -> past_params.
+            # This logic is handled in the loop.
+            pass
 
-        # === 4. First inference (Pipeline start) ===
-        # Send request to GPU, run in background while CPU processes
-        future = self._inference_fn(self.params, sb['current_obs'], mask=sb['current_mask'])
+        # === 4. First inference (Learner Stream) ===
+        # Continuous Subjective Evaluation: Always running Learner inference on Learner's Obs
+        # Send request to GPU
+        future_learner = self._inference_fn(self.params, current_obs_learner, mask=sb['current_mask'])
 
         # === 5. Main loop ===
         for i_step in range(max_len):
              if not sb['active_mask'].any():
                  break
 
-             # A. Inference result reception
-             logits = future
-             logits.block_until_ready() # Wait for GPU calculation completion
-             logits_np = np.array(logits)
+             # A. Inference result reception (Subjective/Learner)
+             logits_learner = future_learner
+             logits_learner.block_until_ready()
+             logits_learner_np = np.array(logits_learner)
 
-             # B. Mix with past model (Self-Play)
-             final_logits = logits_np
+             # B. Inference for Actor (Who determines the action?)
+             # We need to know who is acting to decide which network to query for the ACTION.
+             # obs_active: Observation of the player whose turn it is.
+             obs_active = np.where(sb['current_players'][:, None, None] == 0, sb['obs_0'], sb['obs_1'])
+             
+             # Determine Policy for Action Selection
+             # If current_player == learner_id: Use logits_learner (which is computed on obs_learner == obs_active)
+             # If current_player != learner_id: Use Opponent Policy.
+             
+             # Optimization: If we are in self-play (not past), opponent uses same params.
+             # But obs_active != obs_learner (usually), so we need another inference call anyway.
+             
+             is_my_turn = (sb['current_players'] == learner_ids)
+             
+             future_actor = None
              if use_past_self_play:
-                 past_logits = self._inference_fn(past_params, sb['current_obs'], mask=sb['current_mask'])
-                 past_logits_np = np.array(past_logits)
-                 mask_agent = (sb['current_players'] == agent_ids)
-                 # Vectorized mixing process
-                 final_logits = np.where(mask_agent[:, None], logits_np, past_logits_np)
+                 # Opponent uses past_params
+                 # We only need to run actor inference if it is NOT my turn.
+                 # If it IS my turn, logits_learner is sufficient (since obs_learner == obs_active).
+                 # Wait, we need to mix.
+                 future_actor = self._inference_fn(past_params, obs_active, mask=sb['current_mask'])
+             else:
+                 # Standard Self-Play: Opponent uses same params
+                 future_actor = self._inference_fn(self.params, obs_active, mask=sb['current_mask'])
+             
+             logits_actor = future_actor
+             logits_actor_np = np.array(logits_actor)
+             
+             # Combine Logits for Step
+             # If is_my_turn -> logits_learner
+             # Else -> logits_actor
+             final_logits = np.where(is_my_turn[:, None], logits_learner_np, logits_actor_np)
 
              # C. Simulation execution (Rust)
-             (next_obs, rewards, dones, _, valid_mask, actions, log_probs, next_current_players, next_mask) = \
+             # step returns ((obs_0, obs_1), rewards, ...)
+             ((next_obs_0, next_obs_1), rewards, dones, _, valid_mask, actions, log_probs, next_current_players, next_mask) = \
                  sim.sample_and_step(final_logits)
              
              # Calculate rewards for stats
-             # rewards from Rust is now absolute [r_P1, r_P2]
              rewards_np = np.array(rewards) # (B, 2)
-             
-            #  # === debug code ===
-            #  if abs(rewards_np[0, 0]) > 0.001:
-            #      logging.info(f"★ Debug Reward (Batch 0): {rewards_np[0]} | Done: {dones[0]} | Turn: {sb['episode_lengths'][0]}")
-            #  # ==================================
              
              # === D. Pipeline optimization and data saving ===
              
              # Save current state for saving
-             old_obs = sb['current_obs']
+             old_obs_learner = current_obs_learner
+             
+             # We store the mask corresponding to the LEARNER?
+             # Actually mask is usually valid actions for the ACTIVE player.
+             # For off-turn, mask is irrelevant for policy loss, but maybe useful for architecture.
+             # Let's just use the simulator's mask (which is for active player) or old mask.
              old_mask = sb['current_mask']
              old_active = sb['active_mask'].copy()
-             old_players = sb['current_players'].copy() # Needed to determine whose turn it was
+             old_players = sb['current_players'].copy() 
 
              # Update to next state
-             sb['current_obs'] = np.array(next_obs)
+             nb_obs_0_np = np.array(next_obs_0)
+             nb_obs_1_np = np.array(next_obs_1)
+             
+             sb['obs_0'] = nb_obs_0_np
+             sb['obs_1'] = nb_obs_1_np
+             
+             # Select next learner obs
+             current_obs_learner = np.where(learner_ids[:, None, None] == 0, nb_obs_0_np, nb_obs_1_np)
+             
              sb['current_players'] = np.array(next_current_players)
              sb['current_mask'] = np.array(next_mask)
              
+             # Valid determination
+             step_valid = valid_mask.astype(bool)
+             
              # Active determination (deactivate if completed or invalid)
-             still_active = old_active & (~dones) & valid_mask.astype(bool)
+             still_active = old_active & (~dones) & step_valid
              sb['active_mask'] = still_active
 
              # Next inference immediately (GPU runs while CPU saves)
+             # Always run learner inference
              if sb['active_mask'].any():
-                 future = self._inference_fn(self.params, sb['current_obs'], mask=sb['current_mask'])
+                 future_learner = self._inference_fn(self.params, current_obs_learner, mask=sb['current_mask'])
 
              # Data saving (vectorized for speed)
-             write_mask = old_active & valid_mask.astype(bool)
-             if use_past_self_play:
-                 # Save only if it was the learning agent's turn
-                 write_mask = write_mask & (old_players == agent_ids)
-
+             # We save ALL steps now (Subjective Stream)
+             write_mask = old_active & step_valid
+             
              write_indices = np.where(write_mask)[0]
              if write_indices.size > 0:
                  current_ptrs = tb['ptrs'][write_indices]
@@ -773,12 +850,21 @@ class RNaDLearner:
                  final_ptrs = current_ptrs[valid_ptr_mask]
                  
                  if final_indices.size > 0:
-                     tb['obs_buf'][final_ptrs, final_indices] = old_obs[final_indices]
+                     tb['obs_buf'][final_ptrs, final_indices] = old_obs_learner[final_indices]
                      tb['mask_buf'][final_ptrs, final_indices] = old_mask[final_indices]
                      tb['act_buf'][final_ptrs, final_indices] = actions[final_indices]
-                     tb['rew_buf'][final_ptrs, final_indices] = rewards_np[final_indices] # Store absolute
+                     tb['rew_buf'][final_ptrs, final_indices] = rewards_np[final_indices] # Absolute rewards
+                     # log_prob from the ACTOR (behavior policy) required for V-trace?
+                     # Yes, rho = pi_learner / mu_behavior.
+                     # If I acted, mu = pi_learner (so rho=1).
+                     # If Opponent acted, mu = pi_opponent. pi_learner is irrelevant (masked).
+                     # So we just store the log_prob returned by sample_and_step.
                      tb['log_prob_buf'][final_ptrs, final_indices] = log_probs[final_indices]
-                     tb['player_buf'][final_ptrs, final_indices] = old_players[final_indices]
+                     
+                     # Store Learner ID and Current Player
+                     tb['player_buf'][final_ptrs, final_indices] = learner_ids[final_indices]
+                     tb['current_player_buf'][final_ptrs, final_indices] = old_players[final_indices]
+                     
                      tb['ptrs'][final_indices] += 1
                      sb['episode_lengths'][final_indices] += 1
 
@@ -790,6 +876,7 @@ class RNaDLearner:
                  rec_indices = finished_indices[needs_record_mask]
                  if rec_indices.size > 0:
                      # Use Absolute rewards for simpler stats
+                     # If stats tracking expects P1 perspective, we use rewards_np[:, 0]
                      r_p1 = rewards_np[rec_indices, 0]
                      
                      outcomes = np.zeros(len(rec_indices), dtype=int)
