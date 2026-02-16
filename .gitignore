@@ -10,7 +10,7 @@ deckgym.so
 deckgym_openspiel/
 runs/**
 checkpoints*/**
-battle.html
+battle*.html
 
 .env
 

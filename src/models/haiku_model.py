@@ -41,7 +41,7 @@ class DeckGymNet(hk.Module):
              inf_mask = (1.0 - mask) * -1e9
              policy_logits = policy_logits + inf_mask
 
-        value = hk.Linear(1)(x)
+        value = hk.Linear(2)(x)
         return policy_logits, value
 
 
@@ -130,7 +130,7 @@ class TransformerNet(hk.Module):
              policy_logits = policy_logits + inf_mask
 
         # Value
-        value = hk.Linear(1)(x)
+        value = hk.Linear(2)(x)
         
         return policy_logits, value
 
@@ -369,5 +369,5 @@ class CardTransformerNet(hk.Module):
              inf_mask = (1.0 - mask) * -1e9
              policy_logits = policy_logits + inf_mask
 
-        value = hk.Linear(1, name="lin_value")(final_repr)
+        value = hk.Linear(2, name="lin_value")(final_repr)
         return policy_logits, value

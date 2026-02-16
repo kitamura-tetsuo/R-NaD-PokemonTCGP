@@ -216,33 +216,23 @@ class RNaDConfig(NamedTuple):
 
 def v_trace(
     v_tm1: jnp.ndarray, # (T, B)
+    v_tp1: jnp.ndarray, # (T, B)
     r_t: jnp.ndarray,   # (T, B)
     rho_t: jnp.ndarray, # (T, B)
     gamma: float = 0.99,
     clip_rho_threshold: float = 1.0,
     clip_pg_rho_threshold: float = 1.0,
-    bootstrap_value: Optional[jnp.ndarray] = None
 ) -> Tuple[jnp.ndarray, jnp.ndarray]:
     """
     Computes V-trace targets and advantages.
     Assumes v_tm1 contains values for steps 0 to T-1.
+    Assumes v_tp1 contains values for steps 1 to T (bootstrapped).
     """
     T = v_tm1.shape[0]
 
     # Clip importance weights
     rho_bar_t = jnp.minimum(rho_t, clip_rho_threshold)
     c_bar_t = jnp.minimum(rho_t, clip_pg_rho_threshold)
-
-    # We need a bootstrap value for V_T.
-    # v_tm1 has shape (T, B). bootstrap_value has shape (B,) or (1, B).
-    if bootstrap_value is None:
-        bootstrap_value = jnp.zeros((1, v_tm1.shape[1]))
-    else:
-        # Ensure shape (1, B)
-        if bootstrap_value.ndim == 1:
-            bootstrap_value = bootstrap_value[None, :]
-            
-    v_all = jnp.concatenate([v_tm1, bootstrap_value], axis=0) # (T+1, B)
 
     def scan_body(carry, x):
         acc = carry
@@ -253,7 +243,7 @@ def v_trace(
         return acc, acc + v_curr
 
     # Scan from T-1 down to 0
-    xs = (rho_bar_t, c_bar_t, r_t, v_all[:-1], v_all[1:])
+    xs = (rho_bar_t, c_bar_t, r_t, v_tm1, v_tp1)
     xs_rev = jax.tree_util.tree_map(lambda x: x[::-1], xs)
 
     init_acc = jnp.zeros_like(v_tm1[0])
@@ -261,10 +251,9 @@ def v_trace(
 
     vs = vs_rev[::-1]
 
-    # Advantages for Policy Gradient
-    vs_plus_1 = jnp.concatenate([vs[1:], jnp.zeros((1, vs.shape[1]))], axis=0)
+    # Advantages for Policy Gradient (uses v_tp1 as the lookahead value)
     rho_pg = jnp.minimum(rho_t, clip_pg_rho_threshold)
-    pg_advantages = rho_pg * (r_t + gamma * vs_plus_1 - v_all[:-1])
+    pg_advantages = rho_pg * (r_t + gamma * v_tp1 - v_tm1)
 
     return vs, pg_advantages
 
@@ -324,8 +313,10 @@ def loss_fn(params, fixed_params, batch, apply_fn, config: RNaDConfig, alpha_rna
     obs = batch['obs'] # (T, B, dim)
     mask = batch.get('mask') # (T, B, action_dim)
     act = batch['act'] # (T, B)
-    rew = batch['rew'] # (T, B)
+    rew = batch['rew'] # (T, B, 2) -- Absolute rewards [r_p1, r_p2]
     log_prob_behavior = batch['log_prob'] # (T, B)
+    bootstrap_value = batch.get('bootstrap_value', None) # (B, 2) -- Absolute values [v_p1, v_p2]
+    player_id = batch['player_id'] # (T, B) -- 0 for P1, 1 for P2
 
     T, B, _ = obs.shape
     flat_obs = obs.reshape(-1, obs.shape[-1])
@@ -334,7 +325,13 @@ def loss_fn(params, fixed_params, batch, apply_fn, config: RNaDConfig, alpha_rna
     # Forward pass (Current Policy)
     logits, values = apply_fn(params, jax.random.PRNGKey(0), flat_obs, mask=flat_mask)
     logits = logits.reshape(T, B, -1)
-    values = values.reshape(T, B)
+    values = values.reshape(T, B, 2) # (T, B, 2) -- [v_self, v_opp]
+
+    # Resolve values to Absolute P1/P2
+    # If player=0: v_p1=v_self, v_p2=v_opp
+    # If player=1: v_p1=v_opp, v_p2=v_self
+    v_p1 = jnp.where(player_id[..., None] == 0, values[..., 0], values[..., 1])
+    v_p2 = jnp.where(player_id[..., None] == 0, values[..., 1], values[..., 0])
 
     # Forward pass (Fixed Policy)
     fixed_logits, _ = apply_fn(fixed_params, jax.random.PRNGKey(0), flat_obs, mask=flat_mask)
@@ -349,29 +346,73 @@ def loss_fn(params, fixed_params, batch, apply_fn, config: RNaDConfig, alpha_rna
     log_pi_a = jnp.sum(log_probs * act_one_hot, axis=-1)
     log_pi_fixed_a = jnp.sum(fixed_log_probs * act_one_hot, axis=-1)
 
-    # Regularized Reward: r_reg = r - alpha * (log_pi - log_pi_fixed)
-    r_reg = rew - alpha_rnad * (log_pi_a - log_pi_fixed_a)
+    # Regularization Penalty (applied to acting player)
+    # penalty = alpha * (log_pi - log_pi_fixed)
+    # r_reg = r - penalty
+    penalty = alpha_rnad * (log_pi_a - log_pi_fixed_a)
+    
+    # Apply penalty to absolute rewards
+    r_p1 = rew[..., 0]
+    r_p2 = rew[..., 1]
+    
+    # If P1 is acting, subtract penalty from r_p1. If P2 is acting, subtract from r_p2.
+    r_reg_p1 = r_p1 - jnp.where(player_id == 0, penalty, 0.0)
+    r_reg_p2 = r_p2 - jnp.where(player_id == 1, penalty, 0.0)
 
     # Importance Sampling Weights
     log_rho = log_pi_a - log_prob_behavior
     rho = jnp.exp(log_rho)
 
-    # V-trace
-    vs, pg_adv = v_trace(
-        values,
-        r_reg,
-        rho,
+    # --- Independent V-trace for P1 and P2 ---
+    
+    # Bootstrap setup (Absolute values)
+    if bootstrap_value is None:
+        bootstrap_value = jnp.zeros((B, 2))
+    elif bootstrap_value.ndim == 1:
+         bootstrap_value = jnp.zeros((B, 2))
+
+    # 1. P1 Stream
+    # We pass v_p1 (T, B) and bootstrap_value[:, 0] (B,)
+    # v_trace handles concatenation internally via 'v_tp1' arg if we passed it?
+    # Our modified v_trace takes v_tm1 and v_tp1.
+    # v_tp1 for P1 stream: v_p1[1:] + bootstrap
+    
+    v_p1_next = jnp.concatenate([v_p1[1:], bootstrap_value[None, :, 0]], axis=0)
+    
+    vs_p1, pg_adv_p1 = v_trace(
+        v_tm1=v_p1,
+        v_tp1=v_p1_next,
+        r_t=r_reg_p1,
+        rho_t=rho, # rho is always for the acting player step
         gamma=config.discount_factor,
         clip_rho_threshold=config.clip_rho_threshold,
         clip_pg_rho_threshold=config.clip_pg_rho_threshold,
-        bootstrap_value=batch.get('bootstrap_value', None)
     )
 
-    # Value Loss
-    value_loss = 0.5 * jnp.mean((jax.lax.stop_gradient(vs) - values) ** 2)
+    # 2. P2 Stream
+    v_p2_next = jnp.concatenate([v_p2[1:], bootstrap_value[None, :, 1]], axis=0)
+    
+    vs_p2, pg_adv_p2 = v_trace(
+        v_tm1=v_p2,
+        v_tp1=v_p2_next,
+        r_t=r_reg_p2,
+        rho_t=rho,
+        gamma=config.discount_factor,
+        clip_rho_threshold=config.clip_rho_threshold,
+        clip_pg_rho_threshold=config.clip_pg_rho_threshold,
+    )
+
+    # Value Loss (Sum of both absolute streams)
+    value_loss_p1 = 0.5 * jnp.mean((jax.lax.stop_gradient(vs_p1) - v_p1) ** 2)
+    value_loss_p2 = 0.5 * jnp.mean((jax.lax.stop_gradient(vs_p2) - v_p2) ** 2)
+    value_loss = value_loss_p1 + value_loss_p2
 
     # Policy Loss
-    policy_loss = -jnp.mean(log_pi_a * jax.lax.stop_gradient(pg_adv))
+    # We maximize the advantage of the acting player.
+    # If P1 acting, use pg_adv_p1. If P2 acting, use pg_adv_p2.
+    current_pg_adv = jnp.where(player_id == 0, pg_adv_p1, pg_adv_p2)
+    
+    policy_loss = -jnp.mean(log_pi_a * jax.lax.stop_gradient(current_pg_adv))
 
     # Metrics
     probs = jax.nn.softmax(logits)
@@ -381,8 +422,9 @@ def loss_fn(params, fixed_params, batch, apply_fn, config: RNaDConfig, alpha_rna
     kl = jnp.sum(probs * (log_probs - fixed_log_probs), axis=-1)
     mean_kl = jnp.mean(kl)
 
-    y_true = jax.lax.stop_gradient(vs)
-    y_pred = values
+    # Metric variance (using P1 stream for reference)
+    y_true = jax.lax.stop_gradient(vs_p1)
+    y_pred = v_p1
     var_y = jnp.var(y_true)
     var_resid = jnp.var(y_true - y_pred)
     explained_variance = 1 - var_resid / (var_y + 1e-8)
@@ -646,8 +688,9 @@ class RNaDLearner:
             'obs_buf': np.zeros((max_len, batch_size, *self.obs_shape), dtype=np.float32),
             'mask_buf': np.zeros((max_len, batch_size, self.num_actions), dtype=np.float32),
             'act_buf': np.zeros((max_len, batch_size), dtype=np.int32),
-            'rew_buf': np.zeros((max_len, batch_size), dtype=np.float32),
+            'rew_buf': np.zeros((max_len, batch_size, 2), dtype=np.float32), 
             'log_prob_buf': np.zeros((max_len, batch_size), dtype=np.float32),
+            'player_buf': np.zeros((max_len, batch_size), dtype=np.int32), # Store player ID
             'ptrs': np.zeros(batch_size, dtype=int)
         }
 
@@ -681,7 +724,16 @@ class RNaDLearner:
              # C. Simulation execution (Rust)
              (next_obs, rewards, dones, _, valid_mask, actions, log_probs, next_current_players, next_mask) = \
                  sim.sample_and_step(final_logits)
-
+             
+             # Calculate rewards for stats
+             # rewards from Rust is now absolute [r_P1, r_P2]
+             rewards_np = np.array(rewards) # (B, 2)
+             
+             # === debug code ===
+             if abs(rewards_np[0, 0]) > 0.001:
+                 logging.info(f"★ Debug Reward (Batch 0): {rewards_np[0]} | Done: {dones[0]} | Turn: {sb['episode_lengths'][0]}")
+             # ==================================
+             
              # === D. Pipeline optimization and data saving ===
              
              # Save current state for saving
@@ -720,8 +772,9 @@ class RNaDLearner:
                      tb['obs_buf'][final_ptrs, final_indices] = old_obs[final_indices]
                      tb['mask_buf'][final_ptrs, final_indices] = old_mask[final_indices]
                      tb['act_buf'][final_ptrs, final_indices] = actions[final_indices]
-                     tb['rew_buf'][final_ptrs, final_indices] = rewards[final_indices]
+                     tb['rew_buf'][final_ptrs, final_indices] = rewards_np[final_indices] # Store absolute
                      tb['log_prob_buf'][final_ptrs, final_indices] = log_probs[final_indices]
+                     tb['player_buf'][final_ptrs, final_indices] = old_players[final_indices]
                      tb['ptrs'][final_indices] += 1
                      sb['episode_lengths'][final_indices] += 1
 
@@ -732,32 +785,37 @@ class RNaDLearner:
                  needs_record_mask = ~sb['outcome_recorded'][finished_indices]
                  rec_indices = finished_indices[needs_record_mask]
                  if rec_indices.size > 0:
-                     r_vals = rewards[rec_indices]
-                     actors = old_players[rec_indices]
+                     # Use Absolute rewards for simpler stats
+                     r_p1 = rewards_np[rec_indices, 0]
                      
                      outcomes = np.zeros(len(rec_indices), dtype=int)
-                     # actor=0 (P1) wins if r > 0, loses if r < 0
-                     win_cond = r_vals > 1e-3
-                     lose_cond = r_vals < -1e-3
                      
-                     p1_win = (win_cond & (actors == 0)) | (lose_cond & (actors == 1))
-                     p2_win = (win_cond & (actors == 1)) | (lose_cond & (actors == 0))
+                     win_cond = r_p1 > 1e-3
+                     lose_cond = r_p1 < -1e-3
                      
-                     outcomes[p1_win] = 1
-                     outcomes[p2_win] = 2
+                     outcomes[win_cond] = 1 # P1 Win
+                     outcomes[lose_cond] = 2 # P1 Loss => P2 Win (assuming zero-sum for win outcome)
                      
                      sb['episode_outcomes'][rec_indices] = outcomes
                      sb['outcome_recorded'][rec_indices] = True
         
         # === 6. Result aggregation and return ===
         # Bootstrap values (not finished episodes' final state values)
-        merged_bootstrap = np.zeros(batch_size, dtype=np.float32)
+        merged_bootstrap = np.zeros((batch_size, 2), dtype=np.float32) # (B, 2)
         if sb['active_mask'].any():
             if self.config.timeout_reward is not None:
-                 vals_np = np.full(batch_size, self.config.timeout_reward, dtype=np.float32)
+                 vals_np = np.full((batch_size, 2), self.config.timeout_reward, dtype=np.float32)
             else:
                  vals = self._value_fn(self.params, sb['current_obs'])
-                 vals_np = np.array(vals).reshape(-1)
+                 vals_np = np.array(vals).reshape(batch_size, 2) # [v_self, v_opp]
+                 
+                 # Convert to absolute [v_p1, v_p2]
+                 # If player=0, [v_self, v_opp] -> [v_p1, v_p2]
+                 # If player=1, [v_self, v_opp] -> [v_p2, v_p1]
+                 p2_mask = (sb['current_players'] == 1)
+                 vals_abs = vals_np.copy()
+                 vals_abs[p2_mask] = vals_abs[p2_mask][:, ::-1] # Swap for P2
+                 vals_np = vals_abs
             
             active_idxs = np.where(sb['active_mask'])[0]
             if active_idxs.size > 0:
@@ -774,6 +832,7 @@ class RNaDLearner:
             'act': np.array(tb['act_buf']),
             'rew': np.array(tb['rew_buf']),
             'log_prob': np.array(tb['log_prob_buf']),
+            'player_id': np.array(tb['player_buf']),
             'bootstrap_value': np.array(merged_bootstrap),
             'stats': {
                 'mean_episode_length': np.mean(sb['episode_lengths']),
