@@ -18,3 +18,7 @@ battle.html
 saved_model/*
 tree.sqlite
 tree.sqlite-journal
+data/mined/
+mined_data.jsonl
+league_report.json
+matches.db

@@ -58,6 +58,29 @@
                 "PYTHONPATH": "${env:PYTHONPATH}:${workspaceFolder}:${workspaceFolder}/deckgym-core/python"
             },
             "python": "${workspaceFolder}/.venv/bin/python"
+        },
+        {
+            "name": "Python Debugger: tree_viz",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/src/tree_viz.py",
+            "console": "integratedTerminal",
+            "args": [
+                "--mined_source",
+                "mined_data.jsonl",
+                "--mined_index",
+                "-1",
+                "--max_depth",
+                "10",
+                "--device",
+                "cpu",
+                "--output",
+                "analysis.sqlite",
+            ],
+            "env": {
+                "PYTHONPATH": "${env:PYTHONPATH}:${workspaceFolder}:${workspaceFolder}/deckgym-core/python"
+            },
+            "python": "${workspaceFolder}/.venv/bin/python"
         }
     ]
 }

@@ -1,6 +1,21 @@
 import argparse
 import sys
 import os
+
+# Configure JAX platform before importing jax (if --device cpu is used)
+if "--device" in sys.argv:
+    try:
+        idx = sys.argv.index("--device")
+        if idx + 1 < len(sys.argv) and sys.argv[idx + 1] == "cpu":
+            os.environ["JAX_PLATFORMS"] = "cpu"
+            os.environ["CUDA_VISIBLE_DEVICES"] = ""
+            # Prevent JAX from discovering CUDA plugins to avoid segfaults on CPU-only machines
+            # with jax-cuda installed
+            sys.modules["jax_plugins.xla_cuda12"] = None
+            sys.modules["jax_plugins.xla_cuda13"] = None
+    except ValueError:
+        pass
+
 import json
 import sqlite3
 import re

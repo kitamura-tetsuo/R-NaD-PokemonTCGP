@@ -2,6 +2,8 @@ import argparse
 import sys
 import os
 import json
+import sqlite3
+import re
 import time
 import logging
 import pickle
@@ -21,6 +23,8 @@ from typing import NamedTuple, List, Dict, Any, Optional, Tuple
 from src.rnad import RNaDConfig, RNaDLearner, find_latest_checkpoint, LeagueConfig
 from src.tree_viz import get_fast_state_key, extract_state_info
 
+place_pattern = re.compile(r"^Place\((.*), (\d+)\)$")
+
 # Try importing tensorflow for SavedModel loading
 try:
     import tensorflow as tf
@@ -38,21 +42,210 @@ class MinerConfig(NamedTuple):
     league_decks_student: Optional[str] = None
     league_decks_teacher: Optional[str] = None
     diagnostic_games_per_checkpoint: int = 10
-    max_depth: int = 5 # Oracle search depth
+    find_depth: int = 5 # Oracle search depth
+    mine_depth: int = 5 # Tree mining depth
+    disable_retreat_depth: int = 3 # Stop exploring retreats beyond this depth
     prediction_error_threshold: float = 0.5 # Squared error threshold
     value_change_threshold: float = 0.4 # Absolute change threshold
     device: str = "gpu"
     batch_size: int = 1 # Inference batch size for self-play
     seed: int = 42
 
+class TreeStorage:
+    def __init__(self, db_path):
+        self.conn = sqlite3.connect(db_path)
+        self.cursor = self.conn.cursor()
+        self.setup_db()
+    
+    def setup_db(self):
+        self.cursor.execute("DROP TABLE IF EXISTS nodes")
+        self.cursor.execute("DROP TABLE IF EXISTS edges")
+        
+        self.cursor.execute("""
+            CREATE TABLE nodes (
+                id INTEGER PRIMARY KEY,
+                step INTEGER,
+                turn INTEGER,
+                acting_player INTEGER,
+                is_terminal BOOLEAN,
+                is_chance BOOLEAN,
+                is_ai BOOLEAN,
+                is_repeated BOOLEAN,
+                repeated_node_id INTEGER,
+                action_name TEXT,
+                state_json TEXT,
+                state_hash INTEGER
+            )
+        """)
+        
+        self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_state_hash ON nodes(state_hash)")
+        
+        self.cursor.execute("""
+            CREATE TABLE edges (
+                parent_id INTEGER,
+                child_id INTEGER,
+                action_name TEXT,
+                UNIQUE(parent_id, child_id, action_name)
+            )
+        """)
+        self.conn.commit()
+    
+    def add_node(self, node_data, state_hash=None):
+        state_json = json.dumps(node_data.get("state")) if node_data.get("state") else None
+        
+        self.cursor.execute("""
+            INSERT INTO nodes (
+                id, step, turn, acting_player, 
+                is_terminal, is_chance, is_ai, 
+                is_repeated, repeated_node_id, action_name, state_json, state_hash
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            node_data["id"],
+            node_data.get("step"),
+            node_data.get("state", {}).get("turn", 0) if node_data.get("state") else 0,
+            node_data.get("acting_player"),
+            node_data.get("is_terminal", False),
+            node_data.get("is_chance", False),
+            node_data.get("is_ai", False),
+            node_data.get("is_repeated", False),
+            node_data.get("repeated_node_id"),
+            node_data.get("action_name"),
+            state_json,
+            state_hash
+        ))
+        return node_data["id"]
+
+    def check_visited(self, state_hash):
+        self.cursor.execute("SELECT id FROM nodes WHERE state_hash = ? AND is_repeated = 0 LIMIT 1", (state_hash,))
+        row = self.cursor.fetchone()
+        return row[0] if row else None
+
+    def add_edge(self, parent_id, child_id, action_name):
+        self.cursor.execute("INSERT OR IGNORE INTO edges (parent_id, child_id, action_name) VALUES (?, ?, ?)", (parent_id, child_id, action_name))
+
+    def commit(self):
+        self.conn.commit()
+
+    def close(self):
+        self.conn.close()
+
+def save_tree_to_sqlite(initial_state, db_path, mine_depth, disable_retreat_depth, ai_player):
+    db = TreeStorage(db_path)
+    node_id_counter = 0
+    
+    # Stack items: (state, depth, step, action_name, parent_id)
+    stack = [(initial_state, 0, 0, "Root", None)]
+    
+    while stack:
+        state, depth, step, action_name, parent_id = stack.pop()
+        
+        node_id_counter += 1
+        current_node_id = node_id_counter
+        
+        # 1. Generate Fast Key
+        state_raw = state.rust_game.get_state()
+        pending_chance = state._pending_stochastic_action if hasattr(state, "_pending_stochastic_action") else None
+        state_key = get_fast_state_key(state_raw, pending_chance)
+        state_hash = hash(state_key)
+
+        # 2. Check Repeated
+        existing_id = db.check_visited(state_hash)
+        
+        is_repeated = False
+        repeated_id = None
+        
+        if existing_id is not None:
+            is_repeated = True
+            repeated_id = existing_id
+        
+        # 3. Extract Info
+        state_info = None
+        if not is_repeated:
+            state_info = extract_state_info(state_raw)
+            if pending_chance is not None:
+                state_info["_pending_chance"] = pending_chance
+
+        node_data = {
+            "id": current_node_id,
+            "action_name": action_name + (" (Dup)" if is_repeated else ""),
+            "step": step,
+            "acting_player": state.current_player(),
+            "is_terminal": state.is_terminal(),
+            "is_repeated": is_repeated,
+            "repeated_node_id": repeated_id,
+            "state": state_info
+        }
+        
+        if state.is_chance_node():
+           node_data["is_chance"] = True
+
+        if not state.is_chance_node() and not state.is_terminal() and state.current_player() == ai_player:
+           node_data["is_ai"] = True
+
+        db.add_node(node_data, state_hash=state_hash)
+        
+        if parent_id is not None:
+            db.add_edge(parent_id, current_node_id, action_name)
+
+        # Pruning
+        if is_repeated or state.is_terminal() or depth >= mine_depth:
+            if node_id_counter % 1000 == 0: db.commit()
+            continue
+
+        # 4. Generate Children
+        if state.is_chance_node():
+            for action, prob in state.chance_outcomes():
+                child = state.clone()
+                child.apply_action(action)
+                stack.append((child, depth + 1, step + 1, f"Chance (p={prob:.2f})", current_node_id))
+        else:
+            curr_p = state.current_player()
+            actions_to_process = []
+            bench_place_groups = {} 
+            
+            for action in state.legal_actions():
+                action_str = state.action_to_string(curr_p, action)
+
+                # Retreat Pruning
+                if depth >= disable_retreat_depth and "Retreat" in action_str:
+                    continue
+
+                match = place_pattern.match(action_str)
+                if match:
+                    card_name = match.group(1)
+                    index = int(match.group(2))
+                    if index >= 1: 
+                        if card_name not in bench_place_groups:
+                            bench_place_groups[card_name] = []
+                        bench_place_groups[card_name].append((index, action, action_str))
+                        continue
+                
+                actions_to_process.append((action, action_str))
+            
+            for card_name, group in bench_place_groups.items():
+                group.sort(key=lambda x: x[0])
+                best = group[0]
+                actions_to_process.append((best[1], best[2]))
+            
+            for action, action_str in actions_to_process:
+                child = state.clone()
+                child.apply_action(action)
+                stack.append((child, depth + 1, step + 1, action_str, current_node_id))
+
+        if node_id_counter % 1000 == 0:
+            db.commit()
+
+    db.commit()
+    db.close()
+
 class OracleSolver:
     """
     Solves a game state using Expectiminimax / DFS up to max_depth.
     Returns the exact value (-1.0 to 1.0) if determined, or None if inconclusive (depth limit reached without result).
     """
-    def __init__(self, game, max_depth, ai_player):
+    def __init__(self, game, find_depth, ai_player):
         self.game = game
-        self.max_depth = max_depth
+        self.find_depth = find_depth
         self.ai_player = ai_player
         self.transposition_table = {}
 
@@ -67,7 +260,7 @@ class OracleSolver:
             return state.returns()[self.ai_player]
 
         # 2. Check Depth Limit
-        if depth >= self.max_depth:
+        if depth >= self.find_depth:
             # Reached max depth without definitive result.
             # According to user instruction: "Max depth is depth FROM game over".
             # So if we haven't hit game over, we can't be sure.
@@ -187,6 +380,8 @@ class Miner:
         if config.device == 'cpu':
             jax.config.update("jax_platform_name", "cpu")
             os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
+            
+        self.current_checkpoint_path = "unknown"
         
         # Initialize Game (Default)
         self.gametype = "deckgym_ptcgp"
@@ -272,6 +467,7 @@ class Miner:
 
     def load_weights(self, path):
         logging.info(f"Loading weights from: {path}")
+        self.current_checkpoint_path = path
         
         # Check if SavedModel
         if os.path.isdir(path) and "saved_model.pb" in os.listdir(path):
@@ -475,7 +671,7 @@ class Miner:
         for item in interesting_states:
             state = item["state"]
             # Solve
-            solver = OracleSolver(self.game, self.config.max_depth, state.current_player())
+            solver = OracleSolver(self.game, self.config.find_depth, state.current_player())
             oracle_val = solver.solve(state)
             
             if oracle_val is not None:
@@ -492,6 +688,48 @@ class Miner:
                     "deck_id_2": item["deck_id_2"],
                     "seed": item["seed"]
                 })
+                self.save_results(results)
+                
+                # Create detailed tree visualization for this solved state
+                try:
+                    checkpoint_name = os.path.basename(self.current_checkpoint_path.rstrip(os.sep))
+                    if not checkpoint_name: checkpoint_name = "unknown"
+                    
+                    mined_dir = os.path.join("data", "mined", checkpoint_name)
+                    os.makedirs(mined_dir, exist_ok=True)
+                    
+                    # Use a unique index or seed for filename
+                    # We don't have a global index here easily, using seed + result count
+                    # Or use 'index' assuming results are appended?
+                    # The user said "[index].sqlite". Maybe I should maintain a counter or use seed.
+                    # Using global timestamp + unique id might be safer, but user asked for [index].
+                    # I'll use list index 'len(results)' (which represents count in this batch) + timestamp to be safe?
+                    # Or better: "data/mined/[checkpoint_name]/" is a dir.
+                    # I'll use the seed as index since it's unique per run usually? No.
+                    # I'll just use a sanitized timestamp + random string or similar?
+                    # "data/mined/[chechpoint_name] へ [index].sqlite"
+                    # I will use the position in results list as index effectively, 
+                    # but since we append to results in the loop, len(results) is 1, 2, ...
+                    
+                    # Since run_oracle is called once per batch, and we might run multiple times?
+                    # I'll use a simple counter based on existing files or random?
+                    # Let's simple check number of files?
+                    # No, that's race-y.
+                    # Let's just use the seed from the item? User requested "Index".
+                    # I will interpret index as the index in the current batch processing or loop.
+                    
+                    sqlite_filename = f"{len(results)}.sqlite"
+                    sqlite_path = os.path.join(mined_dir, sqlite_filename)
+                    if os.path.exists(sqlite_path):
+                         # Avoid overwrite if possible
+                         sqlite_filename = f"{len(results)}_{int(time.time())}.sqlite"
+                         sqlite_path = os.path.join(mined_dir, sqlite_filename)
+                    
+                    logging.info(f"Saving tree visualization to {sqlite_path}")
+                    save_tree_to_sqlite(state, sqlite_path, self.config.mine_depth, self.config.disable_retreat_depth, state.current_player())
+                    
+                except Exception as e:
+                    logging.error(f"Failed to save tree visualization: {e}")
         
         return results
 
@@ -565,7 +803,9 @@ if __name__ == "__main__":
     parser.add_argument("--checkpoint", type=str, default=None, help="Alias for checkpoint_dir")
     
     parser.add_argument("--device", type=str, default="gpu")
-    parser.add_argument("--max_depth", type=int, default=5)
+    parser.add_argument("--find_depth", type=int, default=5)
+    parser.add_argument("--mine_depth", type=int, default=5)
+    parser.add_argument("--disable_retreat_depth", type=int, default=3)
     parser.add_argument("--league_decks_student", type=str, default=None)
     parser.add_argument("--league_decks_teacher", type=str, default=None)
     parser.add_argument("--diagnostic_games_per_checkpoint", type=int, default=10)
@@ -577,7 +817,9 @@ if __name__ == "__main__":
     config = MinerConfig(
         checkpoint_dir=ckpt,
         device=args.device,
-        max_depth=args.max_depth,
+        find_depth=args.find_depth,
+        mine_depth=args.mine_depth,
+        disable_retreat_depth=args.disable_retreat_depth,
         league_decks_student=args.league_decks_student,
         league_decks_teacher=args.league_decks_teacher,
         diagnostic_games_per_checkpoint=args.diagnostic_games_per_checkpoint

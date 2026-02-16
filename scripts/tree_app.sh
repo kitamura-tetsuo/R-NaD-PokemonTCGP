@@ -14,29 +14,4 @@ export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$(python -c "import nvidia.cuda_cupti; p
 export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$(python -c "import nvidia.nccl; print(nvidia.nccl.__path__[0])")/lib
 export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$(python -c "import nvidia.cusparse; print(nvidia.cusparse.__path__[0])")/lib
 
-echo "Starting miner"
-python src/miner.py \
-    --checkpoint "checkpoints/" \
-    --league_decks_student "train_data/teacher.csv" \
-    --league_decks_teacher "train_data/teacher.csv" \
-    --device "cpu" \
-    --find_depth 7 \
-    --mine_depth 7 \
-    --disable_retreat_depth 3 \
-    "$@"
-
-# echo "Starting tree viz"
-# python src/tree_viz.py \
-#     --mined_source mined_data.jsonl \
-#     --mined_index -1 \
-#     --max_depth 10 \
-#     --device "cpu" \
-#     --output analysis.sqlite
-
 streamlit run src/tree_app.py -- --dir "data/mined"
-
-# python src/distill.py \
-#     --checkpoint_dir "checkpoints" \
-#     --data_file "mined_data.jsonl" \
-#     --device "cpu" \
-#     "$@"
