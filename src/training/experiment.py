@@ -14,7 +14,11 @@ class ExperimentManager:
             if mlflow.active_run() and mlflow.active_run().info.run_id != run_id:
                 mlflow.end_run()
             if not mlflow.active_run():
-                mlflow.start_run(run_id=run_id)
+                try:
+                    mlflow.start_run(run_id=run_id)
+                except Exception as e:
+                    logging.warning(f"Failed to resume run {run_id}: {e}. Starting a new run.")
+                    mlflow.start_run()
         elif not mlflow.active_run():
             mlflow.start_run()
 
@@ -45,8 +49,8 @@ class ExperimentManager:
                 params = {"config": str(config)}
 
         # Define keys to exclude from parameters and which ones should be tags
-        exclude_from_params = ["batch_size", "max_steps", "deck_id_1", "deck_id_2", "log_interval", "save_interval", "league_config", "accumulation_steps", "damage_reward", "enable_profiler", "model_type", "num_buffers", "num_workers", "past_self_play", "point_reward", "profile_num_steps", "profile_start_step", "profiler_dir", "runs/profile", "seed", "test_games", "test_interval", "timeout_reward", "transformer", "tuned_batch_size", "tuned_num_workers", "tuned_update_batch_size", "update_batch_size", "win_reward", ]
-        save_as_tags = ["batch_size", "max_steps", "log_interval", "save_interval"]
+        exclude_from_params = ["batch_size", "max_steps", "deck_id_1", "deck_id_2", "log_interval", "save_interval", "league_config", "accumulation_steps", "damage_reward", "enable_profiler", "model_type", "num_buffers", "num_workers", "past_self_play", "point_reward", "profile_num_steps", "profile_start_step", "profiler_dir", "runs/profile", "seed", "test_games", "test_interval", "timeout_reward", "transformer", "tuned_batch_size", "tuned_num_workers", "tuned_update_batch_size", "update_batch_size", "win_reward", "unroll_length"]
+        save_as_tags = ["batch_size", "max_steps", "log_interval", "save_interval", "unroll_length"]
 
         # Set tags
         for key in save_as_tags:

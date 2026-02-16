@@ -9,7 +9,8 @@
             "type": "debugpy",
             "request": "launch",
             "program": "${file}",
-            "console": "integratedTerminal"
+            "console": "integratedTerminal",
+            "envFile": "${workspaceFolder}/.env"
         },
         {
             "name": "Python Debugger: Train",
@@ -17,19 +18,24 @@
             "request": "launch",
             "program": "${workspaceFolder}/train.py",
             "console": "integratedTerminal",
+            "envFile": "${workspaceFolder}/.env",
             "args": [
                 "--batch_size",
                 "1",
                 "--accumulation_steps",
-                "128",
+                "1024",
+                "--update_batch_size",
+                "1",
+                "--num_workers",
+                "8",
                 "--max_steps",
-                "200",
+                "20000",
                 "--save_interval",
-                "10",
+                "1",
                 "--log_interval",
                 "1",
                 "--test_interval",
-                "10",
+                "-1",
                 "--test_games",
                 "4",
                 "--win_reward",
@@ -43,16 +49,29 @@
                 "--league_decks_student",
                 "train_data/teacher.csv",
                 "--league_decks_teacher",
-                "train_data/teacher.csv",
-                "--enable_profiler",
-                "--transformer_layers",
-                "3",
-                "--transformer_heads",
-                "2",
-                "--transformer_embed_dim",
-                "64",
-                "--transformer_seq_len",
-                "8"
+                "train_data/teacher.csv"
+            ],
+            "env": {
+                "PYTHONPATH": "${env:PYTHONPATH}:${workspaceFolder}:${workspaceFolder}/deckgym-core/python"
+            },
+            "python": "${workspaceFolder}/.venv/bin/python"
+        },
+        {
+            "name": "Python Debugger: Battle",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/src/battle.py",
+            "console": "integratedTerminal",
+            "envFile": "${workspaceFolder}/.env",
+            "args": [
+                "--checkpoint",
+                "checkpoints",
+                "--deck_id_1",
+                "train_data/8acd216f.txt",
+                "--deck_id_2",
+                "train_data/ab2bf611.txt",
+                "--device",
+                "cpu"
             ],
             "env": {
                 "PYTHONPATH": "${env:PYTHONPATH}:${workspaceFolder}:${workspaceFolder}/deckgym-core/python"
@@ -65,6 +84,7 @@
             "request": "launch",
             "program": "${workspaceFolder}/src/tree_viz.py",
             "console": "integratedTerminal",
+            "envFile": "${workspaceFolder}/.env",
             "args": [
                 "--mined_source",
                 "mined_data.jsonl",

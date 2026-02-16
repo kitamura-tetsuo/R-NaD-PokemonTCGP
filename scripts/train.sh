@@ -59,6 +59,7 @@ python train.py \
   --accumulation_steps 1024 \
   --update_batch_size 1 \
   --num_workers 8 \
+  --unroll_length 80 \
   --max_steps 20000 \
   --save_interval 1 \
   --log_interval 1 \
@@ -66,7 +67,7 @@ python train.py \
   --test_games 4 \
   --win_reward 1.0 \
   --point_reward 0.1 \
-  --damage_reward 0.01 \
+  --damage_reward 0.0001 \
   --timeout_reward 0.0 \
   --league_decks_student "train_data/teacher.csv" \
   --league_decks_teacher "train_data/teacher.csv" \
