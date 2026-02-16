@@ -330,8 +330,8 @@ def loss_fn(params, fixed_params, batch, apply_fn, config: RNaDConfig, alpha_rna
     # Resolve values to Absolute P1/P2
     # If player=0: v_p1=v_self, v_p2=v_opp
     # If player=1: v_p1=v_opp, v_p2=v_self
-    v_p1 = jnp.where(player_id[..., None] == 0, values[..., 0], values[..., 1])
-    v_p2 = jnp.where(player_id[..., None] == 0, values[..., 1], values[..., 0])
+    v_p1 = jnp.where(player_id == 0, values[..., 0], values[..., 1])
+    v_p2 = jnp.where(player_id == 0, values[..., 1], values[..., 0])
 
     # Forward pass (Fixed Policy)
     fixed_logits, _ = apply_fn(fixed_params, jax.random.PRNGKey(0), flat_obs, mask=flat_mask)
@@ -729,10 +729,10 @@ class RNaDLearner:
              # rewards from Rust is now absolute [r_P1, r_P2]
              rewards_np = np.array(rewards) # (B, 2)
              
-             # === debug code ===
-             if abs(rewards_np[0, 0]) > 0.001:
-                 logging.info(f"★ Debug Reward (Batch 0): {rewards_np[0]} | Done: {dones[0]} | Turn: {sb['episode_lengths'][0]}")
-             # ==================================
+            #  # === debug code ===
+            #  if abs(rewards_np[0, 0]) > 0.001:
+            #      logging.info(f"★ Debug Reward (Batch 0): {rewards_np[0]} | Done: {dones[0]} | Turn: {sb['episode_lengths'][0]}")
+            #  # ==================================
              
              # === D. Pipeline optimization and data saving ===
              
