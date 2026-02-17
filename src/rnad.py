@@ -888,6 +888,7 @@ class RNaDLearner:
             'rew': np.array(tb['rew_buf']),
             'log_prob': np.array(tb['log_prob_buf']),
             'player_id': np.array(tb['player_buf']),
+            'current_player': np.array(tb['current_player_buf']),
             'bootstrap_value': np.array(merged_bootstrap),
             'stats': {
                 'mean_episode_length': np.mean(sb['episode_lengths']),
