@@ -315,9 +315,9 @@ def loss_fn(params, fixed_params, batch, apply_fn, config: RNaDConfig, alpha_rna
     act = batch['act'] # (T, B)
     rew = batch['rew'] # (T, B, 2) -- Absolute rewards [r_p1, r_p2]
     log_prob_behavior = batch['log_prob'] # (T, B)
-    bootstrap_value = batch.get('bootstrap_value', None) # (B, 2) -- Absolute values [v_p1, v_p2]
-    player_id = batch['player_id'] # (T, B) -- 0 for P1, 1 for P2
-
+    bootstrap_value = batch.get('bootstrap_value', None) # (B,) -- Value [v_learner]
+    player_id = batch['player_id'] # (T, B) -- Learner ID (0 or 1)
+    
     T, B, _ = obs.shape
     flat_obs = obs.reshape(-1, obs.shape[-1])
     flat_mask = mask.reshape(-1, mask.shape[-1]) if mask is not None else None
@@ -325,13 +325,7 @@ def loss_fn(params, fixed_params, batch, apply_fn, config: RNaDConfig, alpha_rna
     # Forward pass (Current Policy)
     logits, values = apply_fn(params, jax.random.PRNGKey(0), flat_obs, mask=flat_mask)
     logits = logits.reshape(T, B, -1)
-    values = values.reshape(T, B, 2) # (T, B, 2) -- [v_self, v_opp]
-
-    # Resolve values to Absolute P1/P2
-    # If player=0: v_p1=v_self, v_p2=v_opp
-    # If player=1: v_p1=v_opp, v_p2=v_self
-    v_p1 = jnp.where(player_id == 0, values[..., 0], values[..., 1])
-    v_p2 = jnp.where(player_id == 0, values[..., 1], values[..., 0])
+    values = values.reshape(T, B) # (T, B) -- [v_learner]
 
     # Forward pass (Fixed Policy)
     fixed_logits, _ = apply_fn(fixed_params, jax.random.PRNGKey(0), flat_obs, mask=flat_mask)
@@ -347,107 +341,78 @@ def loss_fn(params, fixed_params, batch, apply_fn, config: RNaDConfig, alpha_rna
     log_pi_fixed_a = jnp.sum(fixed_log_probs * act_one_hot, axis=-1)
 
     # Determine if it's the learner's turn
-    # learner_id is the identity of the network (who owns obs)
+    # learner_id is provided by player_id
     # current_player is whose turn it actually was
-    # In standard R-NaD, these are always equal if we only train on active steps.
-    # In continuous evaluation, they differ.
-    
-    # We need current_player from batch.
     current_player = batch.get('current_player') # (T, B)
     if current_player is None:
-        # Fallback for old behavior (assume valid steps are my turn if not specified, or all steps)
-        # But for this task we must have it.
-        # Assuming batch has it.
-        current_player = player_id # If not present, maybe we are in old mode?
+        # Fallback (should be present now)
+        current_player = player_id 
     
     is_my_turn = (current_player == player_id) # (T, B) boolean
 
     # Regularization Penalty (applied to acting player)
     penalty = alpha_rnad * (log_pi_a - log_pi_fixed_a)
     
-    # Apply penalty to absolute rewards
-    r_p1 = rew[..., 0]
-    r_p2 = rew[..., 1]
+    # Select Learner's Reward
+    # If learner_id == 0 -> r_p1 (index 0)
+    # If learner_id == 1 -> r_p2 (index 1)
+    # Note: rew is (T, B, 2)
+    # We select based on player_id which is (T, B)
+    r_learner = jnp.where(player_id == 0, rew[..., 0], rew[..., 1])
     
-    # Penalty is applied to reward ONLY if I took the action.
-    # If opponent took action, I don't pay penalty for their policy deviation.
-    # So apply penalty only where is_my_turn is True.
-    # Actually, standard R-NaD applies regulariation to the reward "received" at that step.
-    # If I didn't act, I shouldn't be regularized.
-    
+    # Penalty is applied to reward ONLY if I took the action (is_my_turn).
+    # If not my turn, no penalty (deviation by opponent doesn't cost me).
     penalty_masked = jnp.where(is_my_turn, penalty, 0.0)
     
-    r_reg_p1 = r_p1 - jnp.where(player_id == 0, penalty_masked, 0.0)
-    r_reg_p2 = r_p2 - jnp.where(player_id == 1, penalty_masked, 0.0)
+    r_reg = r_learner - penalty_masked
 
     # Importance Sampling Weights
     log_rho = log_pi_a - log_prob_behavior
     
     # If not my turn, force rho = 1.0 (log_rho = 0.0)
-    # This ensures V-trace treats off-turn steps as pure state transitions
+    # This treats off-turn transitions as environment dynamics from learner's perspective.
     log_rho = jnp.where(is_my_turn, log_rho, 0.0)
     rho = jnp.exp(log_rho)
 
-    # --- Independent V-trace for P1 and P2 ---
+    # --- V-trace on Learner Stream ---
     
-    # Bootstrap setup (Absolute values)
+    # Bootstrap setup
     if bootstrap_value is None:
-        bootstrap_value = jnp.zeros((B, 2))
-    elif bootstrap_value.ndim == 1:
-         bootstrap_value = jnp.zeros((B, 2))
-
-    # 1. P1 Stream
-    v_p1_next = jnp.concatenate([v_p1[1:], bootstrap_value[None, :, 0]], axis=0)
+        bootstrap_value = jnp.zeros((B,))
     
-    vs_p1, pg_adv_p1 = v_trace(
-        v_tm1=v_p1,
-        v_tp1=v_p1_next,
-        r_t=r_reg_p1,
-        rho_t=rho, # Corrected rho
-        gamma=config.discount_factor,
-        clip_rho_threshold=config.clip_rho_threshold,
-        clip_pg_rho_threshold=config.clip_pg_rho_threshold,
-    )
-
-    # 2. P2 Stream
-    v_p2_next = jnp.concatenate([v_p2[1:], bootstrap_value[None, :, 1]], axis=0)
+    # Prepare v_next
+    v_next = jnp.concatenate([values[1:], bootstrap_value[None, :]], axis=0)
     
-    vs_p2, pg_adv_p2 = v_trace(
-        v_tm1=v_p2,
-        v_tp1=v_p2_next,
-        r_t=r_reg_p2,
+    vs, pg_adv = v_trace(
+        v_tm1=values,
+        v_tp1=v_next,
+        r_t=r_reg,
         rho_t=rho,
         gamma=config.discount_factor,
         clip_rho_threshold=config.clip_rho_threshold,
         clip_pg_rho_threshold=config.clip_pg_rho_threshold,
     )
 
-    # Value Loss (Sum of both absolute streams)
-    value_loss_p1 = 0.5 * jnp.mean((jax.lax.stop_gradient(vs_p1) - v_p1) ** 2)
-    value_loss_p2 = 0.5 * jnp.mean((jax.lax.stop_gradient(vs_p2) - v_p2) ** 2)
-    value_loss = value_loss_p1 + value_loss_p2
+    # Value Loss
+    value_loss = 0.5 * jnp.mean((jax.lax.stop_gradient(vs) - values) ** 2)
 
     # Policy Loss
-    # We maximize the advantage of the acting player.
-    # But ONLY calculate policy loss if is_my_turn is True.
-    
-    current_pg_adv = jnp.where(player_id == 0, pg_adv_p1, pg_adv_p2)
-    
-    # Mask policy loss
-    raw_policy_loss = -log_pi_a * jax.lax.stop_gradient(current_pg_adv)
+    # Maximize advantage on MY turns.
+    # Mask policy loss -> is_my_turn
+    raw_policy_loss = -log_pi_a * jax.lax.stop_gradient(pg_adv)
     policy_loss = jnp.mean(jnp.where(is_my_turn, raw_policy_loss, 0.0))
 
     # Metrics
     probs = jax.nn.softmax(logits)
     entropy = -jnp.sum(probs * log_probs, axis=-1)
-    mean_entropy = jnp.mean(jnp.where(is_my_turn, entropy, 0.0)) # Only for active steps? Or all? Let's keep it consistent.
+    mean_entropy = jnp.mean(jnp.where(is_my_turn, entropy, 0.0))
 
     kl = jnp.sum(probs * (log_probs - fixed_log_probs), axis=-1)
     mean_kl = jnp.mean(jnp.where(is_my_turn, kl, 0.0))
 
-    # Metric variance (using P1 stream for reference)
-    y_true = jax.lax.stop_gradient(vs_p1)
-    y_pred = v_p1
+    # Metric variance
+    y_true = jax.lax.stop_gradient(vs)
+    y_pred = values
     var_y = jnp.var(y_true)
     var_resid = jnp.var(y_true - y_pred)
     explained_variance = 1 - var_resid / (var_y + 1e-8)
@@ -899,21 +864,13 @@ class RNaDLearner:
         
         # === 6. Result aggregation and return ===
         # Bootstrap values (not finished episodes' final state values)
-        merged_bootstrap = np.zeros((batch_size, 2), dtype=np.float32) # (B, 2)
+        merged_bootstrap = np.zeros((batch_size,), dtype=np.float32) # (B,)
         if sb['active_mask'].any():
             if self.config.timeout_reward is not None:
-                 vals_np = np.full((batch_size, 2), self.config.timeout_reward, dtype=np.float32)
+                 vals_np = np.full((batch_size,), self.config.timeout_reward, dtype=np.float32)
             else:
-                 vals = self._value_fn(self.params, sb['current_obs'])
-                 vals_np = np.array(vals).reshape(batch_size, 2) # [v_self, v_opp]
-                 
-                 # Convert to absolute [v_p1, v_p2]
-                 # If player=0, [v_self, v_opp] -> [v_p1, v_p2]
-                 # If player=1, [v_self, v_opp] -> [v_p2, v_p1]
-                 p2_mask = (sb['current_players'] == 1)
-                 vals_abs = vals_np.copy()
-                 vals_abs[p2_mask] = vals_abs[p2_mask][:, ::-1] # Swap for P2
-                 vals_np = vals_abs
+                 vals = self._value_fn(self.params, current_obs_learner)
+                 vals_np = np.array(vals).reshape(batch_size) # [v_learner]
             
             active_idxs = np.where(sb['active_mask'])[0]
             if active_idxs.size > 0:
