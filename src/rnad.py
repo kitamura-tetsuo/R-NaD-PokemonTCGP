@@ -705,10 +705,16 @@ class RNaDLearner:
         initial_obs_0_np = np.array(initial_obs_0)
         initial_obs_1_np = np.array(initial_obs_1)
         
-        # Choose obs based on learner_id
-        # if learner_id=0 use obs_0, etc.
-        # Vectorized selection:
-        current_obs_learner = np.where(learner_ids[:, None, None] == 0, initial_obs_0_np, initial_obs_1_np)
+        # Choose obs based on learner_id (0 or 1)
+        # learner_ids is (B,)
+        # initial_obs_0_np is (B, Obs)
+        # We need to broadcast learner_ids to (B, Obs) or compatible.
+        # learner_ids[:, None] -> (B, 1). This broadcasts against (B, Obs) to produce (B, Obs).
+        current_obs_learner = np.where(learner_ids[:, None] == 0, initial_obs_0_np, initial_obs_1_np)
+        
+        # Verify shape to prevent issues
+        if current_obs_learner.shape != initial_obs_0_np.shape:
+            logging.error(f"Shape mismatch in obs selection! LearnerObs: {current_obs_learner.shape}, InitObs: {initial_obs_0_np.shape}")
         
         # State management buffer (single)
         sb = {
@@ -762,7 +768,8 @@ class RNaDLearner:
              # B. Inference for Actor (Who determines the action?)
              # We need to know who is acting to decide which network to query for the ACTION.
              # obs_active: Observation of the player whose turn it is.
-             obs_active = np.where(sb['current_players'][:, None, None] == 0, sb['obs_0'], sb['obs_1'])
+             # sb['current_players'] is (B,). Expand to (B, 1) to broadcast with (B, ObsDim).
+             obs_active = np.where(sb['current_players'][:, None] == 0, sb['obs_0'], sb['obs_1'])
              
              # Determine Policy for Action Selection
              # If current_player == learner_id: Use logits_learner (which is computed on obs_learner == obs_active)
@@ -821,7 +828,7 @@ class RNaDLearner:
              sb['obs_1'] = nb_obs_1_np
              
              # Select next learner obs
-             current_obs_learner = np.where(learner_ids[:, None, None] == 0, nb_obs_0_np, nb_obs_1_np)
+             current_obs_learner = np.where(learner_ids[:, None] == 0, nb_obs_0_np, nb_obs_1_np)
              
              sb['current_players'] = np.array(next_current_players)
              sb['current_mask'] = np.array(next_mask)

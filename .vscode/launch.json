@@ -43,7 +43,7 @@
                 "--point_reward",
                 "0.1",
                 "--damage_reward",
-                "0.01",
+                "0.0001",
                 "--timeout_reward",
                 "0.0",
                 "--league_decks_student",
