@@ -367,12 +367,8 @@ def generate_html(history, output_path):
         function initChart() {{
             const ctx = document.getElementById('evalChart').getContext('2d');
             const labels = history.map((_, i) => i);
-            
-            // Extract data
-            const p1_h0 = history.map(h => h.eval_0_0 || 0);
-            const p1_h1 = history.map(h => h.eval_0_1 || 0);
-            const p2_h0 = history.map(h => h.eval_1_0 || 0);
-            const p2_h1 = history.map(h => h.eval_1_1 || 0);
+            const evalP1 = history.map(h => h.eval_0 || 0);
+            const evalP2 = history.map(h => h.eval_1 || 0);
 
             chart = new Chart(ctx, {{
                 type: 'line',
@@ -380,42 +376,18 @@ def generate_html(history, output_path):
                     labels: labels,
                     datasets: [
                         {{
-                            label: 'P1H0 (P1 Value)',
-                            data: p1_h0,
+                            label: 'Player 1 Eval',
+                            data: evalP1,
                             borderColor: 'blue',
-                            backgroundColor: 'blue',
                             fill: false,
-                            tension: 0.1,
-                            pointRadius: 2
+                            tension: 0.1
                         }},
                         {{
-                            label: 'P2H1 (P1 Value from P2)',
-                            data: p2_h1,
-                            borderColor: 'blue',
-                            backgroundColor: 'blue',
-                            borderDash: [5, 5],
-                            fill: false,
-                            tension: 0.1,
-                            pointRadius: 2
-                        }},
-                        {{
-                            label: 'P2H0 (P2 Value)',
-                            data: p2_h0,
+                            label: 'Player 2 Eval',
+                            data: evalP2,
                             borderColor: 'red',
-                            backgroundColor: 'red',
                             fill: false,
-                            tension: 0.1,
-                            pointRadius: 2
-                        }},
-                        {{
-                            label: 'P1H1 (P2 Value from P1)',
-                            data: p1_h1,
-                            borderColor: 'red',
-                            backgroundColor: 'red',
-                            borderDash: [5, 5],
-                            fill: false,
-                            tension: 0.1,
-                            pointRadius: 2
+                            tension: 0.1
                         }}
                     ]
                 }},
@@ -425,7 +397,7 @@ def generate_html(history, output_path):
                     scales: {{
                         y: {{
                             beginAtZero: false,
-                            title: {{ display: true, text: 'Value' }}
+                            title: {{ display: true, text: 'V-Value' }}
                         }},
                         x: {{
                             title: {{ display: true, text: 'Step' }}
@@ -712,13 +684,7 @@ def main():
         obs_p = state.observation_tensor(p)
         obs_p_batched = np.array(obs_p)[None, ...]
         _, val_p = predict_fn(obs_p_batched)
-        v = val_p[0]
-        if v.shape[0] >= 2:
-            initial_info[f"eval_{p}_0"] = float(v[0])
-            initial_info[f"eval_{p}_1"] = float(v[1])
-        else:
-            initial_info[f"eval_{p}_0"] = float(v[0])
-            initial_info[f"eval_{p}_1"] = 0.0
+        initial_info[f"eval_{p}"] = float(val_p[0, 0])
         
     history.append(initial_info)
 
@@ -837,15 +803,7 @@ def main():
             obs_p = state.observation_tensor(p)
             obs_p_batched = np.array(obs_p)[None, ...]
             _, val_p = predict_fn(obs_p_batched)
-            # Determine if val_p is 1D or 2D (it should be (Batch, 2))
-            # But just in case
-            v = val_p[0] # (2,)
-            if v.shape[0] >= 2:
-                info[f"eval_{p}_0"] = float(v[0])
-                info[f"eval_{p}_1"] = float(v[1])
-            else:
-                 info[f"eval_{p}_0"] = float(v[0])
-                 info[f"eval_{p}_1"] = 0.0 # Fallback
+            info[f"eval_{p}"] = float(val_p[0, 0])
             
         history.append(info)
 
