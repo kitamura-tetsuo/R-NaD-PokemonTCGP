@@ -853,11 +853,18 @@ class RNaDLearner:
                      
                      outcomes = np.zeros(len(rec_indices), dtype=int)
                      
+                     # P1 Win: r_p1 > 0
+                     # P2 Win: r_p2 > 0 (and r_p1 < 0)
+                     # Tie: r_p1 < 0 AND r_p2 < 0 (due to Rust change returning -1 for Tie)
+                     
                      win_cond = r_p1 > 1e-3
-                     lose_cond = r_p1 < -1e-3
+                     # Check r_p2 to distinguish P2 Win (1) from Tie (-1)
+                     r_p2 = rewards_np[rec_indices, 1]
+                     p2_win_cond = (r_p1 < -1e-3) & (r_p2 > 1e-3)
                      
                      outcomes[win_cond] = 1 # P1 Win
-                     outcomes[lose_cond] = 2 # P1 Loss => P2 Win (assuming zero-sum for win outcome)
+                     outcomes[p2_win_cond] = 2 # P2 Win
+                     # Tie remains 0 (default)
                      
                      sb['episode_outcomes'][rec_indices] = outcomes
                      sb['outcome_recorded'][rec_indices] = True
