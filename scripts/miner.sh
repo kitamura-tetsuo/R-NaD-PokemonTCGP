@@ -23,6 +23,7 @@ python src/miner.py \
     --find_depth 7 \
     --mine_depth 20 \
     --disable_retreat_depth 3 \
+    --disable_energy_attach_threshold 4 \
     --max_visualizations 1 \
     "$@"
 

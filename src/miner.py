@@ -24,6 +24,7 @@ from src.rnad import RNaDConfig, RNaDLearner, find_latest_checkpoint, LeagueConf
 from src.tree_viz import get_fast_state_key, extract_state_info
 
 place_pattern = re.compile(r"^Place\((.*), (\d+)\)$")
+attach_pattern = re.compile(r"\((\d+), [a-zA-Z]+, (\d+)\)")
 
 # Try importing tensorflow for SavedModel loading
 try:
@@ -45,6 +46,7 @@ class MinerConfig(NamedTuple):
     find_depth: int = 5 # Oracle search depth
     mine_depth: int = 5 # Tree mining depth
     disable_retreat_depth: int = 3 # Stop exploring retreats beyond this depth
+    disable_energy_attach_threshold: int = 100 # Stop exploring energy attachments if pokemon has >= this many energy
     prediction_error_threshold: float = 0.5 # Squared error threshold
     value_change_threshold: float = 0.4 # Absolute change threshold
     device: str = "gpu"
@@ -130,7 +132,7 @@ class TreeStorage:
     def close(self):
         self.conn.close()
 
-def save_tree_to_sqlite(initial_state, db_path, mine_depth, disable_retreat_depth, ai_player):
+def save_tree_to_sqlite(initial_state, db_path, mine_depth, disable_retreat_depth, disable_energy_attach_threshold, ai_player):
     db = TreeStorage(db_path)
     node_id_counter = 0
     
@@ -210,6 +212,37 @@ def save_tree_to_sqlite(initial_state, db_path, mine_depth, disable_retreat_dept
                 # Retreat Pruning
                 if depth >= disable_retreat_depth and "Retreat" in action_str:
                     continue
+
+                # Energy Pruning
+                if "Attach" in action_str:
+                    matches = attach_pattern.findall(action_str)
+                    should_skip = False
+                    rust_state = state.rust_game.get_state()
+                    p_idx = state.current_player()
+                    
+                    for _, idx_str in matches:
+                        idx = int(idx_str)
+                        target_mon = None
+                        if idx == 0:
+                            target_mon = rust_state.get_active_pokemon(p_idx)
+                        else:
+                            bench = rust_state.get_bench_pokemon(p_idx)
+                            # bench is a list of Options (None or Pokemon) usually, or list of Pokemon?
+                            # tree_viz loop: for mon in rust_state.get_bench_pokemon(p):
+                            # It seems it returns a list of Option<Pokemon>.
+                            # Indices 1..N map to bench[0]..bench[N-1].
+                            bench_idx = idx - 1
+                            if bench_idx < len(bench):
+                                target_mon = bench[bench_idx]
+                        
+                        if target_mon:
+                            # attached_energy is a list
+                            if len(target_mon.attached_energy) >= disable_energy_attach_threshold:
+                                should_skip = True
+                                break
+                    
+                    if should_skip:
+                        continue
 
                 match = place_pattern.match(action_str)
                 if match:
@@ -732,7 +765,7 @@ class Miner:
                          sqlite_path = os.path.join(mined_dir, sqlite_filename)
                     
                     logging.info(f"Saving tree visualization to {sqlite_path}")
-                    save_tree_to_sqlite(state, sqlite_path, self.config.mine_depth, self.config.disable_retreat_depth, state.current_player())
+                    save_tree_to_sqlite(state, sqlite_path, self.config.mine_depth, self.config.disable_retreat_depth, self.config.disable_energy_attach_threshold, state.current_player())
                     visualizations_count += 1
                     
                 except Exception as e:
@@ -813,6 +846,7 @@ if __name__ == "__main__":
     parser.add_argument("--find_depth", type=int, default=5)
     parser.add_argument("--mine_depth", type=int, default=5)
     parser.add_argument("--disable_retreat_depth", type=int, default=3)
+    parser.add_argument("--disable_energy_attach_threshold", type=int, default=100)
     parser.add_argument("--league_decks_student", type=str, default=None)
     parser.add_argument("--league_decks_teacher", type=str, default=None)
     parser.add_argument("--diagnostic_games_per_checkpoint", type=int, default=10)
@@ -828,6 +862,7 @@ if __name__ == "__main__":
         find_depth=args.find_depth,
         mine_depth=args.mine_depth,
         disable_retreat_depth=args.disable_retreat_depth,
+        disable_energy_attach_threshold=args.disable_energy_attach_threshold,
         league_decks_student=args.league_decks_student,
         league_decks_teacher=args.league_decks_teacher,
         diagnostic_games_per_checkpoint=args.diagnostic_games_per_checkpoint,
