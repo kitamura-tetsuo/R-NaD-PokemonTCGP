@@ -256,6 +256,8 @@ def generate_html(history, output_path):
     <script>
         const history = {history_json};
         let currentStep = 0;
+        let tablePage = 0;
+        const ROWS_PER_PAGE = 10;
 
         function renderCard(card, type="hand") {{
             if (!card) return '<div class="card-container" style="border: 1px dashed #ccc; height: 70px;"></div>';
@@ -333,6 +335,51 @@ def generate_html(history, output_path):
             `;
         }}
 
+        function renderTable() {{
+            const state = history[currentStep];
+            if (!state) return;
+
+            const candidates = state.all_candidates || [];
+            const totalPages = Math.ceil(candidates.length / ROWS_PER_PAGE);
+
+            if (tablePage >= totalPages && totalPages > 0) tablePage = totalPages - 1;
+            if (tablePage < 0) tablePage = 0;
+
+            const start = tablePage * ROWS_PER_PAGE;
+            const end = start + ROWS_PER_PAGE;
+            const pageCandidates = candidates.slice(start, end);
+
+            let tableHtml = '<table style="width:100%; border-collapse: collapse;"><thead><tr><th style="border-bottom: 1px solid #ddd; text-align: left;">Action</th><th style="border-bottom: 1px solid #ddd; text-align: right;">Probability</th></tr></thead><tbody>';
+
+            if (pageCandidates.length > 0) {{
+                pageCandidates.forEach(cand => {{
+                    const isSelected = (cand.name === state.action_name);
+                    const bg = isSelected ? 'background-color: #bbdefb;' : '';
+                    const weight = isSelected ? 'font-weight: bold;' : '';
+                    tableHtml += `<tr style="${{bg}}${{weight}}"><td style="padding: 4px; border-bottom: 1px solid #eee;">${{cand.name}}</td><td style="padding: 4px; border-bottom: 1px solid #eee; text-align: right;">${{(cand.prob * 100).toFixed(2)}}%</td></tr>`;
+                }});
+            }} else {{
+                 tableHtml += `<tr><td colspan="2">Action: ${{state.action_name || 'Start'}} (No probability data)</td></tr>`;
+            }}
+            tableHtml += '</tbody></table>';
+
+            // Pagination Controls
+            if (totalPages > 1) {{
+                tableHtml += `<div style="display: flex; justify-content: center; align-items: center; gap: 10px; margin-top: 10px;">
+                    <button onclick="changeTablePage(-1)" ${{tablePage === 0 ? 'disabled' : ''}}>Prev</button>
+                    <span>Page ${{tablePage + 1}} of ${{totalPages}}</span>
+                    <button onclick="changeTablePage(1)" ${{tablePage === totalPages - 1 ? 'disabled' : ''}}>Next</button>
+                </div>`;
+            }}
+
+            document.getElementById('full-stats-display').innerHTML = tableHtml;
+        }}
+
+        function changeTablePage(delta) {{
+            tablePage += delta;
+            renderTable();
+        }}
+
         function render() {{
             const state = history[currentStep];
             if (!state) return;
@@ -343,22 +390,9 @@ def generate_html(history, output_path):
             const p1Html = renderPlayer(0, state);
             const p2Html = renderPlayer(1, state);
 
-            document.getElementById('board').innerHTML = p1Html + p2Html; 
+            document.getElementById('board').innerHTML = p1Html + p2Html;
 
-            // Generate Full Stats Table
-            let tableHtml = '<table style="width:100%; border-collapse: collapse;"><thead><tr><th style="border-bottom: 1px solid #ddd; text-align: left;">Action</th><th style="border-bottom: 1px solid #ddd; text-align: right;">Probability</th></tr></thead><tbody>';
-            if (state.all_candidates && state.all_candidates.length > 0) {{
-                state.all_candidates.forEach(cand => {{
-                    const isSelected = (cand.name === state.action_name);
-                    const bg = isSelected ? 'background-color: #bbdefb;' : '';
-                    const weight = isSelected ? 'font-weight: bold;' : '';
-                    tableHtml += `<tr style="${{bg}}${{weight}}"><td style="padding: 4px; border-bottom: 1px solid #eee;">${{cand.name}}</td><td style="padding: 4px; border-bottom: 1px solid #eee; text-align: right;">${{(cand.prob * 100).toFixed(2)}}%</td></tr>`;
-                }});
-            }} else {{
-                 tableHtml += `<tr><td colspan="2">Action: ${{state.action_name || 'Start'}} (No probability data)</td></tr>`;
-            }}
-            tableHtml += '</tbody></table>';
-            document.getElementById('full-stats-display').innerHTML = tableHtml;
+            renderTable();
 
             updateChart();
         }}
@@ -464,6 +498,7 @@ def generate_html(history, output_path):
         function nextTurn() {{
             if (currentStep < history.length - 1) {{
                 currentStep++;
+                tablePage = 0;
                 render();
             }}
         }}
@@ -471,6 +506,7 @@ def generate_html(history, output_path):
         function prevTurn() {{
             if (currentStep > 0) {{
                 currentStep--;
+                tablePage = 0;
                 render();
             }}
         }}
