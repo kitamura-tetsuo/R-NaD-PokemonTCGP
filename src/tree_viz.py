@@ -83,7 +83,8 @@ def extract_state_info(rust_state):
     }
     if rust_state.is_game_over():
         outcome = rust_state.winner
-        info["winner"] = {"winner": outcome.winner, "is_tie": outcome.is_tie}
+        if outcome is not None:
+            info["winner"] = {"winner": outcome.winner, "is_tie": outcome.is_tie}
 
     for p in [0, 1]:
         p_info = {

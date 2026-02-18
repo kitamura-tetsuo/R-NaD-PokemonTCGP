@@ -19,10 +19,11 @@ python src/miner.py \
     --checkpoint "checkpoints/" \
     --league_decks_student "train_data/teacher.csv" \
     --league_decks_teacher "train_data/teacher.csv" \
-    --device "cpu" \
+    --device "gpu" \
     --find_depth 7 \
-    --mine_depth 7 \
+    --mine_depth 20 \
     --disable_retreat_depth 3 \
+    --max_visualizations 1 \
     "$@"
 
 # echo "Starting tree viz"
@@ -33,7 +34,7 @@ python src/miner.py \
 #     --device "cpu" \
 #     --output analysis.sqlite
 
-streamlit run src/tree_app.py -- --dir "data/mined"
+streamlit run src/tree_app.py -- --dir "data/mined/checkpoint_50.pkl"
 
 # python src/distill.py \
 #     --checkpoint_dir "checkpoints" \

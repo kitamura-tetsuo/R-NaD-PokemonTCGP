@@ -59,7 +59,7 @@ python train.py \
   --accumulation_steps 1024 \
   --update_batch_size 1 \
   --num_workers 8 \
-  --unroll_length 80 \
+  --unroll_length 200 \
   --max_steps 20000 \
   --save_interval 1 \
   --log_interval 1 \

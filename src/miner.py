@@ -49,6 +49,7 @@ class MinerConfig(NamedTuple):
     value_change_threshold: float = 0.4 # Absolute change threshold
     device: str = "gpu"
     batch_size: int = 1 # Inference batch size for self-play
+    max_visualizations: int = 100 # Limit number of tree visualizations per batch
     seed: int = 42
 
 class TreeStorage:
@@ -667,6 +668,7 @@ class Miner:
         """
         results = []
         logging.info(f"Running Oracle on {len(interesting_states)} states...")
+        visualizations_count = 0
         
         for item in interesting_states:
             state = item["state"]
@@ -691,6 +693,10 @@ class Miner:
                 self.save_results(results)
                 
                 # Create detailed tree visualization for this solved state
+                # Create detailed tree visualization for this solved state
+                if visualizations_count >= self.config.max_visualizations:
+                    continue
+
                 try:
                     checkpoint_name = os.path.basename(self.current_checkpoint_path.rstrip(os.sep))
                     if not checkpoint_name: checkpoint_name = "unknown"
@@ -727,6 +733,7 @@ class Miner:
                     
                     logging.info(f"Saving tree visualization to {sqlite_path}")
                     save_tree_to_sqlite(state, sqlite_path, self.config.mine_depth, self.config.disable_retreat_depth, state.current_player())
+                    visualizations_count += 1
                     
                 except Exception as e:
                     logging.error(f"Failed to save tree visualization: {e}")
@@ -809,6 +816,7 @@ if __name__ == "__main__":
     parser.add_argument("--league_decks_student", type=str, default=None)
     parser.add_argument("--league_decks_teacher", type=str, default=None)
     parser.add_argument("--diagnostic_games_per_checkpoint", type=int, default=10)
+    parser.add_argument("--max_visualizations", type=int, default=100, help="Max number of tree visualizations to save per batch")
     
     args = parser.parse_args()
     
@@ -822,7 +830,8 @@ if __name__ == "__main__":
         disable_retreat_depth=args.disable_retreat_depth,
         league_decks_student=args.league_decks_student,
         league_decks_teacher=args.league_decks_teacher,
-        diagnostic_games_per_checkpoint=args.diagnostic_games_per_checkpoint
+        diagnostic_games_per_checkpoint=args.diagnostic_games_per_checkpoint,
+        max_visualizations=args.max_visualizations
     )
     
     miner = Miner(config)
