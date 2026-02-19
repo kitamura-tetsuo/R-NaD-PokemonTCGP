@@ -1,4 +1,4 @@
-Energy: Water
+Energy: Psychic
 1 Chingling (リーシャン) B1 109
 2 Copycat (モノマネむすめ) B1 225
 1 Cyrus (アカギ) A2 150

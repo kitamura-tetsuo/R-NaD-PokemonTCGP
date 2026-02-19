@@ -52,6 +52,7 @@ class MinerConfig(NamedTuple):
     device: str = "gpu"
     batch_size: int = 1 # Inference batch size for self-play
     max_visualizations: int = 100 # Limit number of tree visualizations per batch
+    min_turn: int = 0 # Minimum turn count for candidate states
     seed: int = 42
 
 class TreeStorage:
@@ -77,7 +78,8 @@ class TreeStorage:
                 repeated_node_id INTEGER,
                 action_name TEXT,
                 state_json TEXT,
-                state_hash INTEGER
+                state_hash INTEGER,
+                is_winning BOOLEAN
             )
         """)
         
@@ -100,8 +102,8 @@ class TreeStorage:
             INSERT INTO nodes (
                 id, step, turn, acting_player, 
                 is_terminal, is_chance, is_ai, 
-                is_repeated, repeated_node_id, action_name, state_json, state_hash
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                is_repeated, repeated_node_id, action_name, state_json, state_hash, is_winning
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             node_data["id"],
             node_data.get("step"),
@@ -114,7 +116,8 @@ class TreeStorage:
             node_data.get("repeated_node_id"),
             node_data.get("action_name"),
             state_json,
-            state_hash
+            state_hash,
+            node_data.get("is_winning", False)
         ))
         return node_data["id"]
 
@@ -126,6 +129,9 @@ class TreeStorage:
     def add_edge(self, parent_id, child_id, action_name):
         self.cursor.execute("INSERT OR IGNORE INTO edges (parent_id, child_id, action_name) VALUES (?, ?, ?)", (parent_id, child_id, action_name))
 
+    def set_winning(self, node_id):
+        self.cursor.execute("UPDATE nodes SET is_winning = 1 WHERE id = ?", (node_id,))
+
     def commit(self):
         self.conn.commit()
 
@@ -136,11 +142,12 @@ def save_tree_to_sqlite(initial_state, db_path, mine_depth, disable_retreat_dept
     db = TreeStorage(db_path)
     node_id_counter = 0
     
-    # Stack items: (state, depth, step, action_name, parent_id)
-    stack = [(initial_state, 0, 0, "Root", None)]
+    # Stack items: (state, depth, step, action_name, parent_id, ancestors)
+    # ancestors: List of (node_id, acting_player, is_chance)
+    stack = [(initial_state, 0, 0, "Root", None, [])]
     
     while stack:
-        state, depth, step, action_name, parent_id = stack.pop()
+        state, depth, step, action_name, parent_id, ancestors = stack.pop()
         
         node_id_counter += 1
         current_node_id = node_id_counter
@@ -176,7 +183,8 @@ def save_tree_to_sqlite(initial_state, db_path, mine_depth, disable_retreat_dept
             "is_terminal": state.is_terminal(),
             "is_repeated": is_repeated,
             "repeated_node_id": repeated_id,
-            "state": state_info
+            "state": state_info,
+            "is_winning": False
         }
         
         if state.is_chance_node():
@@ -190,17 +198,59 @@ def save_tree_to_sqlite(initial_state, db_path, mine_depth, disable_retreat_dept
         if parent_id is not None:
             db.add_edge(parent_id, current_node_id, action_name)
 
-        # Pruning
-        if is_repeated or state.is_terminal() or depth >= mine_depth:
+        # Pruning Checks
+        should_stop_branch = False
+
+        # Win Pruning
+        if state.is_terminal():
+            returns = state.returns()
+            # If AI wins (assuming ai_player is maximizing and win > 0)
+            if returns[ai_player] > 0:
+                # Mark current terminal node as winning
+                db.set_winning(current_node_id)
+                
+                # Traverse up ancestors to prune siblings
+                to_prune_parents = set()
+                
+                # Iterate backwards through ancestors
+                curr_ancestors = list(ancestors)
+                while curr_ancestors:
+                    p_id, p_actor, p_chance = curr_ancestors.pop()
+                    # Prune siblings if the parent was AI's choice (and not chance)
+                    if p_actor == ai_player and not p_chance:
+                        to_prune_parents.add(p_id)
+                        db.set_winning(p_id) # Mark ancestor as winning
+                    else:
+                        # Stop if we hit an opponent node or chance node
+                        break
+                
+                if to_prune_parents:
+                    # Filter stack: Remove items whose parent_id is in to_prune_parents
+                    # stack item index 4 is parent_id
+                    stack = [item for item in stack if item[4] not in to_prune_parents]
+            
+            should_stop_branch = True
+
+        if is_repeated or depth >= mine_depth:
+            should_stop_branch = True
+
+        if should_stop_branch:
             if node_id_counter % 1000 == 0: db.commit()
             continue
 
         # 4. Generate Children
+        
+        # Prepare ancestors for children
+        # Add current node to ancestors
+        # (id, acting_player, is_chance)
+        current_ancestor_entry = (current_node_id, state.current_player(), state.is_chance_node())
+        new_ancestors = ancestors + [current_ancestor_entry]
+
         if state.is_chance_node():
             for action, prob in state.chance_outcomes():
                 child = state.clone()
                 child.apply_action(action)
-                stack.append((child, depth + 1, step + 1, f"Chance (p={prob:.2f})", current_node_id))
+                stack.append((child, depth + 1, step + 1, f"Chance (p={prob:.2f})", current_node_id, new_ancestors))
         else:
             curr_p = state.current_player()
             actions_to_process = []
@@ -264,7 +314,7 @@ def save_tree_to_sqlite(initial_state, db_path, mine_depth, disable_retreat_dept
             for action, action_str in actions_to_process:
                 child = state.clone()
                 child.apply_action(action)
-                stack.append((child, depth + 1, step + 1, action_str, current_node_id))
+                stack.append((child, depth + 1, step + 1, action_str, current_node_id, new_ancestors))
 
         if node_id_counter % 1000 == 0:
             db.commit()
@@ -680,6 +730,11 @@ class Miner:
                 if val_change > self.config.value_change_threshold:
                     is_interesting = True
                     reason.append("value_swing")
+                
+                # Turn Filter
+                turn_count = s.rust_game.get_state().turn_count
+                if turn_count < self.config.min_turn:
+                    is_interesting = False
 
                 if is_interesting:
                     interesting_data.append({
@@ -711,7 +766,7 @@ class Miner:
             
             if oracle_val is not None:
                 # We found a definitive result!
-                results.append({
+                res = {
                     "state_key": extract_state_info(state.rust_game.get_state()), # Human readable
                     "oracle_value": float(oracle_val),
                     "model_value": float(item["model_value"]),
@@ -722,8 +777,9 @@ class Miner:
                     "deck_id_1": item["deck_id_1"],
                     "deck_id_2": item["deck_id_2"],
                     "seed": item["seed"]
-                })
-                self.save_results(results)
+                }
+                results.append(res)
+                self.save_results([res])
                 
                 # Create detailed tree visualization for this solved state
                 # Create detailed tree visualization for this solved state
@@ -798,7 +854,7 @@ class Miner:
              
              if candidates:
                  mined = self.run_oracle(candidates)
-                 self.save_results(mined)
+                 # self.save_results(mined) # Handled incrementally in run_oracle
              
              return # Exit after single run
 
@@ -829,10 +885,11 @@ class Miner:
                     mined = self.run_oracle(candidates)
                     
                     # 4. Save
-                    self.save_results(mined)
+                    # self.save_results(mined) # Handled incrementally in run_oracle
             
             else:
                 # No new checkpoint. Sleep.
+                exit()
                 time.sleep(5)
 
 if __name__ == "__main__":
@@ -851,6 +908,7 @@ if __name__ == "__main__":
     parser.add_argument("--league_decks_teacher", type=str, default=None)
     parser.add_argument("--diagnostic_games_per_checkpoint", type=int, default=10)
     parser.add_argument("--max_visualizations", type=int, default=100, help="Max number of tree visualizations to save per batch")
+    parser.add_argument("--min_turn", type=int, default=0, help="Minimum turn count for candidate states")
     
     args = parser.parse_args()
     
@@ -866,7 +924,8 @@ if __name__ == "__main__":
         league_decks_student=args.league_decks_student,
         league_decks_teacher=args.league_decks_teacher,
         diagnostic_games_per_checkpoint=args.diagnostic_games_per_checkpoint,
-        max_visualizations=args.max_visualizations
+        max_visualizations=args.max_visualizations,
+        min_turn=args.min_turn
     )
     
     miner = Miner(config)

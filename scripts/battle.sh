@@ -14,7 +14,7 @@ export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$(python -c "import nvidia.cuda_cupti; p
 export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$(python -c "import nvidia.nccl; print(nvidia.nccl.__path__[0])")/lib
 export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$(python -c "import nvidia.cusparse; print(nvidia.cusparse.__path__[0])")/lib
 python src/battle.py \
-    --checkpoint "checkpoints" \
+    --checkpoint "checkpoints/checkpoint_distilled_1771457648_ep10.pkl" \
     --deck_id_1 "train_data/8acd216f.txt" \
     --deck_id_2 "train_data/ab2bf611.txt" \
     --device "cpu" \

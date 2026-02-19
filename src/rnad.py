@@ -8,6 +8,7 @@ import logging
 import time
 import pickle
 import os
+import sys
 import re
 import optuna # Added for HPO
 from typing import NamedTuple, Tuple, List, Dict, Any, Optional
@@ -527,6 +528,12 @@ class RNaDLearner:
         logging.info(f"Checkpoint saved to {path} at step {step}")
 
     def load_checkpoint(self, path: str) -> Tuple[int, Dict[str, Any]]:
+        # Compatibility: Map optax.transforms -> optax for older checkpoints
+        if 'optax.transforms' not in sys.modules:
+            sys.modules['optax.transforms'] = optax
+        if 'optax.transforms._accumulation' not in sys.modules:
+            sys.modules['optax.transforms._accumulation'] = optax
+
         with open(path, 'rb') as f:
             data = pickle.load(f)
             

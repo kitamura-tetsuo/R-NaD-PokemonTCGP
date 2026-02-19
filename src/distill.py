@@ -93,6 +93,8 @@ def train_step(params, opt_state, apply_fn, optimizer, batch):
 
 import pickle
 
+import sys
+
 def distill(args):
     # 1. Setup Device
     if args.device == 'cpu':
@@ -121,6 +123,12 @@ def distill(args):
 
     # Peek at checkpoint to get correct model dimensions
     if checkpoint_path and os.path.isfile(checkpoint_path):
+        # Compatibility: Map optax.transforms -> optax for older checkpoints
+        if 'optax.transforms' not in sys.modules:
+            sys.modules['optax.transforms'] = optax
+        if 'optax.transforms._accumulation' not in sys.modules:
+            sys.modules['optax.transforms._accumulation'] = optax
+
         try:
             logging.info(f"Peeking at checkpoint {checkpoint_path} for config...")
             with open(checkpoint_path, 'rb') as f:
@@ -128,22 +136,46 @@ def distill(args):
                 if 'config' in ckpt_data:
                     loaded_cfg = ckpt_data['config']
                     logging.info(f"Found config in checkpoint. Embed dim: {getattr(loaded_cfg, 'transformer_embed_dim', 'N/A')}")
-                    # We want to keep batch_size from args, but take model params from checkpoint
-                    # Handle both RNaDConfig objects and dictionaries if implementation varies, 
-                    # but typically it's NamedTuple or similar. getattr is safe.
                     
+                    # Determine config from checkpoint, falling back to defaults
+                    ckpt_model_type = getattr(loaded_cfg, 'model_type', 'transformer')
+                    ckpt_hidden_size = getattr(loaded_cfg, 'hidden_size', 256)
+                    
+                    # Heuristic: if transformer_embed_dim is missing, use hidden_size as it was likely used before
+                    ckpt_embed_dim = getattr(loaded_cfg, 'transformer_embed_dim', ckpt_hidden_size)
+                    
+                    ckpt_layers = getattr(loaded_cfg, 'transformer_layers', 2)
+                    ckpt_heads = getattr(loaded_cfg, 'transformer_heads', 4)
+                    ckpt_seq_len = getattr(loaded_cfg, 'transformer_seq_len', 16)
+                    ckpt_num_blocks = getattr(loaded_cfg, 'num_blocks', 4)
+                    ckpt_unroll_length = getattr(loaded_cfg, 'unroll_length', 200)
+
                     initial_config = initial_config._replace(
-                        model_type=getattr(loaded_cfg, 'model_type', 'transformer'),
-                        transformer_embed_dim=getattr(loaded_cfg, 'transformer_embed_dim', 64),
-                        transformer_layers=getattr(loaded_cfg, 'transformer_layers', 2),
-                        transformer_heads=getattr(loaded_cfg, 'transformer_heads', 4),
-                        transformer_seq_len=getattr(loaded_cfg, 'transformer_seq_len', 16),
-                        hidden_size=getattr(loaded_cfg, 'hidden_size', 256),
-                        num_blocks=getattr(loaded_cfg, 'num_blocks', 4),
-                        unroll_length=getattr(loaded_cfg, 'unroll_length', 200)
+                        model_type=ckpt_model_type,
+                        transformer_embed_dim=ckpt_embed_dim,
+                        transformer_layers=ckpt_layers,
+                        transformer_heads=ckpt_heads,
+                        transformer_seq_len=ckpt_seq_len,
+                        hidden_size=ckpt_hidden_size,
+                        num_blocks=ckpt_num_blocks,
+                        unroll_length=ckpt_unroll_length
                     )
         except Exception as e:
             logging.warning(f"Failed to load config from checkpoint: {e}")
+
+    # Apply overrides from CLI args if present (ALWAYS apply these last)
+    final_embed_dim = args.transformer_embed_dim if args.transformer_embed_dim is not None else initial_config.transformer_embed_dim
+    final_hidden_size = args.hidden_size if args.hidden_size is not None else initial_config.hidden_size
+    final_layers = args.transformer_layers if args.transformer_layers is not None else initial_config.transformer_layers
+    final_heads = args.transformer_heads if args.transformer_heads is not None else initial_config.transformer_heads
+    
+    initial_config = initial_config._replace(
+        transformer_embed_dim=final_embed_dim,
+        transformer_layers=final_layers,
+        transformer_heads=final_heads,
+        hidden_size=final_hidden_size
+    )
+    logging.info(f"Final Configuration - Embed Dim: {final_embed_dim}, Hidden Size: {final_hidden_size}, Layers: {final_layers}, Heads: {final_heads}")
 
     # 2. Initialize Learner (to get network and structure)
     logging.info("Initializing RNaDLearner...")
@@ -210,9 +242,14 @@ if __name__ == "__main__":
     parser.add_argument("--learning_rate", type=float, default=1e-3, help="Learning rate.")
     parser.add_argument("--device", type=str, default="gpu", choices=["cpu", "gpu"], help="Device to use.")
     parser.add_argument("--seed", type=int, default=42, help="Random seed.")
-    parser.add_argument("--save_interval", type=int, default=5, help="Save interval (epochs).")
+    parser.add_argument("--save_interval", type=int, default=10, help="Save interval (epochs).")
     parser.add_argument("--update_batch_size", type=int, default=None, help="Update batch size for RNaDLearner config.")
     parser.add_argument("--accumulation_steps", type=int, default=1, help="Accumulation steps for RNaDLearner config.")
-    
+    # Transformer overrides
+    parser.add_argument("--transformer_embed_dim", type=int, default=None, help="Override transformer embedding dimension.")
+    parser.add_argument("--transformer_layers", type=int, default=None, help="Override transformer layers.")
+    parser.add_argument("--transformer_heads", type=int, default=None, help="Override transformer heads.")
+    parser.add_argument("--hidden_size", type=int, default=None, help="Override hidden size.")
+
     args = parser.parse_args()
     distill(args)
