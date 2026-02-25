@@ -1,0 +1,20 @@
+workerPoolSpecs:
+  - machineSpec:
+      # TPU の場合は GPU のように「基本マシン + 追加GPU」ではなく、
+      # TPU 専用のマシンタイプを直接指定します。
+      # 1チップの場合: ct6e-standard-1t
+      # 4チップ構成の場合: ct6e-standard-4t
+      machineType: ct6e-standard-4t
+    replicaCount: 1
+    containerSpec:
+      imageUri: ghcr.io/kitamura-tetsuo/r-nad-pokemontcgp:latest
+      args:
+        - "--checkpoint_dir"
+        - "/gcs/rnad-checkpoints-bucket/checkpoints"
+        - "--league_decks_student"
+        - "/app/train_data/teacher.csv"
+        - "--league_decks_teacher"
+        - "/app/train_data/teacher.csv"
+scheduling:
+  # ここで Spot インスタンスを指定します
+  strategy: SPOT
