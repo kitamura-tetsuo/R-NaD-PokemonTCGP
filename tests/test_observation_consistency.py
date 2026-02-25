@@ -134,8 +134,18 @@ def test_full_observation_consistency():
         active_hand_cards = np.sum(hand_obs != -1.0)
         assert active_hand_cards == my_hand_size, "Hand card count mismatch"
 
-        # --- Section 5: Deck (241-260) ---
-        deck_obs = obs[241:261]
+        # --- Section 5: Deck (241-260 in OLD, 251-271 in NEW) ---
+        # NOTE: encoding.rs layout:
+        # ...
+        # Hand (Self): 10 slots (231-241)
+        # Hand (Opponent Known): 10 slots (241-251)  <-- MISSED IN OLD TEST
+        # Deck (Self): 20 slots (251-271)
+        # Opponent Deck Count: 1 slot (271)
+        # Opponent Deck Known: 20 slots (272-292)
+        # Discard (Self): 10 slots (292-302)
+        # Discard (Opponent): 10 slots (302-312)
+
+        deck_obs = obs[251:271]
         actual_deck_size = rust_state.get_deck_size(p)
         # encoding.rsではソートして20枚まで。
         valid_deck_slots = np.sum(deck_obs != -1.0)
@@ -145,15 +155,17 @@ def test_full_observation_consistency():
         sorted_deck_obs = deck_obs[deck_obs != -1.0]
         assert np.all(np.diff(sorted_deck_obs) >= 0), "Deck slots should be sorted"
 
-        # --- Section 6: Opponent Deck Count (261) ---
-        assert obs[261] == rust_state.get_deck_size(1-p)
+        # --- Section 6: Opponent Deck Count (271) ---
+        assert obs[271] == rust_state.get_deck_size(1-p)
 
-        # --- Section 7: Discard Piles (262-281) ---
+        # --- Section 7: Discard Piles (292-312) ---
+        # Skip Opponent Deck Known (272-292)
+
         my_discard_size = rust_state.get_discard_pile_size(p)
         opp_discard_size = rust_state.get_discard_pile_size(1-p)
         
-        my_discard_obs = obs[262:272]
-        opp_discard_obs = obs[272:282]
+        my_discard_obs = obs[292:302]
+        opp_discard_obs = obs[302:312]
         
         assert np.sum(my_discard_obs != -1.0) == min(10, my_discard_size)
         assert np.sum(opp_discard_obs != -1.0) == min(10, opp_discard_size)
