@@ -896,14 +896,14 @@ class RNaDLearner:
         ties = np.sum(sb['episode_outcomes'] == 0)
         
         batch_out = {
-            'obs': np.array(tb['obs_buf']),
-            'mask': np.array(tb['mask_buf']),
-            'act': np.array(tb['act_buf']),
-            'rew': np.array(tb['rew_buf']),
-            'log_prob': np.array(tb['log_prob_buf']),
-            'player_id': np.array(tb['player_buf']),
-            'current_player': np.array(tb['current_player_buf']),
-            'bootstrap_value': np.array(merged_bootstrap),
+            'obs': tb['obs_buf'],
+            'mask': tb['mask_buf'],
+            'act': tb['act_buf'],
+            'rew': tb['rew_buf'],
+            'log_prob': tb['log_prob_buf'],
+            'player_id': tb['player_buf'],
+            'current_player': tb['current_player_buf'],
+            'bootstrap_value': merged_bootstrap,
             'stats': {
                 'mean_episode_length': np.mean(sb['episode_lengths']),
                 'max_episode_length': np.max(sb['episode_lengths']),
@@ -967,6 +967,9 @@ class TrajectoryGenerator:
         return self.queue.get()
 
     def _worker(self, worker_id):
+        # 一斉起動による一時的な巨大なメモリピークを分散（stagger）させる
+        time.sleep(worker_id * 15.0)
+        
         seed_base = self.learner.config.seed + (worker_id * 10000)
         rng = np.random.RandomState(seed_base)
         

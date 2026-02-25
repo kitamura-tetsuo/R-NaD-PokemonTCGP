@@ -54,7 +54,7 @@ python src/distill.py \
     --data_file "mined_data.jsonl" \
     --device "gpu" \
     --transformer_embed_dim 256 \
-    --learning_rate 1e-5 \
+    --learning_rate 1e-4 \
     --batch_size 64 \
     --accumulation_steps 8 \
     --update_batch_size 64 \
