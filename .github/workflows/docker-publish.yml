@@ -1,0 +1,51 @@
+name: Docker
+
+on:
+  push:
+    branches: [ "main" ] # mainブランチへのpushで発火
+    # タグ作成時にも発火させたい場合は以下を有効化
+    # tags: [ 'v*.*.*' ]
+
+env:
+  REGISTRY: ghcr.io
+  # 小文字に変換してイメージ名を設定
+  IMAGE_NAME: kitamura-tetsuo/r-nad-pokemontcgp
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+            submodules: recursive # サブモジュールも取得
+
+      - name: Log in to the Container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata (tags, labels) for Docker
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # M1 Mac等の影響を受けないよう、明示的に linux/amd64 でビルド
+          platforms: linux/amd64
