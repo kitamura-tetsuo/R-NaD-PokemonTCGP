@@ -182,8 +182,10 @@ def distill(args):
     learner = RNaDLearner("deckgym_ptcgp", initial_config)
     
     # 3. Load Checkpoint
+    start_step = 0
     if checkpoint_path and os.path.isfile(checkpoint_path):
-        learner.load_checkpoint(checkpoint_path)
+        loaded_step, _ = learner.load_checkpoint(checkpoint_path)
+        start_step = loaded_step
     else:
         logging.warning("No checkpoint found. Initializing from scratch (random weights).")
         learner.init(jax.random.PRNGKey(args.seed))
@@ -194,9 +196,10 @@ def distill(args):
     opt_state = optimizer.init(learner.params)
     
     # 5. Training Loop
-    logging.info(f"Starting distillation for {args.epochs} epochs...")
+    logging.info(f"Starting distillation for {args.epochs} epochs from step {start_step}...")
     
     for epoch in range(args.epochs):
+        current_step = start_step + epoch + 1
         epoch_loss = 0.0
         num_batches = 0
         
@@ -215,17 +218,17 @@ def distill(args):
             
         if num_batches > 0:
             avg_loss = epoch_loss / num_batches
-            logging.info(f"Epoch {epoch+1}/{args.epochs} - MSE Loss: {avg_loss:.6f}")
+            logging.info(f"Epoch {epoch+1}/{args.epochs} (Step {current_step}) - MSE Loss: {avg_loss:.6f}")
             
             # Save periodic checkpoint
             if (epoch + 1) % args.save_interval == 0:
-                save_path = f"checkpoints/checkpoint_distilled_{int(time.time())}_ep{epoch+1}.pkl"
+                save_path = f"checkpoints/checkpoint_distilled_{int(time.time())}_step{current_step}.pkl"
                 # We save using learner's save method to maintain compatibility
                 # Update learner's opt_state to the distillation one? 
                 # Note: If we switch back to RL, the opt_state might be incompatible if structure differs.
                 # Ideally we save params.
                 learner.opt_state = opt_state # HACK: overwriting opt_state
-                learner.save_checkpoint(save_path, epoch + 1, metadata={"type": "distilled", "mse_loss": float(avg_loss)})
+                learner.save_checkpoint(save_path, current_step, metadata={"type": "distilled", "mse_loss": float(avg_loss)})
         else:
             logging.warning("No data batches processed. Check data file.")
             break
