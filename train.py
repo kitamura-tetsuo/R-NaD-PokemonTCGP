@@ -82,6 +82,7 @@ def main():
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--num_workers", type=int, default=4, help="Number of trajectory generation workers")
     parser.add_argument("--disable_mlflow", action="store_true", help="Disable MLflow logging")
+    parser.add_argument("--log_checkpoints", action="store_true", default=False, help="Log checkpoints to MLflow as artifacts")
 
 
     args = parser.parse_args()
@@ -144,7 +145,12 @@ def main():
     # Initialize ExperimentManager
     experiment_manager = None
     if not args.disable_mlflow:
-        experiment_manager = ExperimentManager(experiment_name="RNaD_Experiment", checkpoint_dir=args.checkpoint_dir, run_id=run_id)
+        experiment_manager = ExperimentManager(
+            experiment_name="RNaD_Experiment", 
+            checkpoint_dir=args.checkpoint_dir, 
+            run_id=run_id,
+            log_checkpoints=args.log_checkpoints
+        )
 
     logging.info(f"Starting training with config: {config}")
 

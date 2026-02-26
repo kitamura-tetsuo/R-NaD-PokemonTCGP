@@ -29,5 +29,6 @@ mined_data.jsonl
 *.html
 league_test
 tune_checkpoints
-train_data/*.txt
+# train_data/*.txt
+
 ipynb

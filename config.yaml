@@ -8,11 +8,42 @@ workerPoolSpecs:
       imageUri: us-central1-docker.pkg.dev/r-nad-pokemontcgp/rnad-containers/r-nad-pokemontcgp:latest
       args:
         - "--checkpoint_dir"
-        - "/gcs/r-nad-pokemontcgp-checkpoints/checkpoints"
+        - "gs://r-nad-pokemontcgp-checkpoints/R-NaD-PokemonTCGP_experiments/checkpoints"
+
+        - "--batch_size"
+        - "4"
+        - "--accumulation_steps"
+        - "256"
+        - "--update_batch_size"
+        - "2"
+        - "--num_workers"
+        - "8"
+        - "--max_steps"
+        - "1000"
+        - "--save_interval"
+        - "10"
+        - "--log_interval"
+        - "10"
+        - "--test_interval"
+        - "100"
+        - "--unroll_length"
+        - "200"
+        - "--win_reward"
+        - "1.0"
+        - "--point_reward"
+        - "0.1"
+        - "--damage_reward"
+        - "0.0001"
+        - "--timeout_reward"
+        - "0.0"
         - "--league_decks_student"
         - "/app/train_data/teacher.csv"
         - "--league_decks_teacher"
         - "/app/train_data/teacher.csv"
+        - "--past_self_play"
+
 scheduling:
-  # ここで Spot インスタンスを指定します
   strategy: SPOT
+
+
+# https://console.cloud.google.com/storage/browser/r-nad-pokemontcgp-checkpoints/R-NaD-PokemonTCGP_experiments?hl=ja&project=outliner-d57b0&pageState=(%22StorageObjectListTable%22:(%22f%22:%22%255B%255D%22))

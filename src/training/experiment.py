@@ -5,8 +5,9 @@ from typing import Any, Dict
 import logging
 
 class ExperimentManager:
-    def __init__(self, experiment_name: str, checkpoint_dir: str = "checkpoints", run_id: str = None):
+    def __init__(self, experiment_name: str, checkpoint_dir: str = "checkpoints", run_id: str = None, log_checkpoints: bool = False):
         mlflow.set_experiment(experiment_name=experiment_name)
+        self.log_checkpoints = log_checkpoints
 
         # Configure CheckpointManager
         # Start a run explicitly if not already active
@@ -24,8 +25,15 @@ class ExperimentManager:
 
         self.run_id = mlflow.active_run().info.run_id
 
-        # We save checkpoints locally first, using run_id to avoid conflicts
-        self.checkpoint_dir = os.path.abspath(os.path.join(checkpoint_dir, self.run_id))
+        # We save checkpoints using run_id to avoid conflicts
+        if checkpoint_dir.startswith("gs://"):
+            self.checkpoint_dir = os.path.join(checkpoint_dir, self.run_id)
+        elif checkpoint_dir.startswith("/gcs/"):
+            # For GCS FUSE, we keep it as is to avoid abspath resolving to local root if not intended
+            self.checkpoint_dir = os.path.join(checkpoint_dir, self.run_id)
+        else:
+            self.checkpoint_dir = os.path.abspath(os.path.join(checkpoint_dir, self.run_id))
+
         options = orbax.checkpoint.CheckpointManagerOptions(max_to_keep=5, create=True)
         # Use StandardCheckpointer for PyTrees
         self.checkpointer = orbax.checkpoint.StandardCheckpointer()
@@ -34,7 +42,7 @@ class ExperimentManager:
             self.checkpointer,
             options=options
         )
-        logging.info(f"Initialized ExperimentManager with checkpoint dir: {self.checkpoint_dir}")
+        logging.info(f"Initialized ExperimentManager with checkpoint dir: {self.checkpoint_dir}, log_checkpoints: {self.log_checkpoints}")
 
     def log_params(self, config: Any):
         """Logs configuration parameters to MLflow."""
@@ -104,9 +112,11 @@ class ExperimentManager:
         # Path to the specific step checkpoint
         step_checkpoint_path = os.path.join(self.checkpoint_dir, str(step))
 
-        if os.path.exists(step_checkpoint_path):
+        if self.log_checkpoints and os.path.exists(step_checkpoint_path):
             # Log the directory as an artifact in a 'checkpoints' folder in MLflow
             mlflow.log_artifacts(step_checkpoint_path, artifact_path=f"checkpoints/step_{step}")
             logging.info(f"Saved checkpoint for step {step} to MLflow.")
+        elif not self.log_checkpoints:
+            logging.info(f"Skipping checkpoint upload to MLflow for step {step} (disabled).")
         else:
             logging.warning(f"Checkpoint path {step_checkpoint_path} does not exist.")
