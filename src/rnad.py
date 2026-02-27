@@ -57,29 +57,69 @@ except ImportError:
     pass
 
 def find_latest_checkpoint(checkpoint_dir: str) -> Optional[str]:
-    """Finds the latest checkpoint in the given directory."""
-    if not os.path.exists(checkpoint_dir):
-        return None
+    """Finds the latest checkpoint in the given directory, searching for both .pkl and Orbax formats."""
+    try:
+        import tensorflow as tf
+        exists = tf.io.gfile.exists(checkpoint_dir)
+        if not exists:
+            return None
+        files = tf.io.gfile.listdir(checkpoint_dir)
+    except (ImportError, Exception):
+        if not os.path.exists(checkpoint_dir):
+            return None
+        files = os.listdir(checkpoint_dir)
 
-    checkpoints = [f for f in os.listdir(checkpoint_dir) if f.startswith("checkpoint_") and f.endswith(".pkl")]
-    if not checkpoints:
-        return None
+    latest_step = -1
+    latest_path = None
 
-    # Extract step numbers
-    steps = []
-    checkpoint_map = {}
-    for cp in checkpoints:
-        match = re.search(r"checkpoint_(\d+).pkl", cp)
-        if match:
-            step = int(match.group(1))
-            steps.append(step)
-            checkpoint_map[step] = cp
+    # 1. Look for .pkl files in top level
+    for cp in files:
+        if cp.startswith("checkpoint_") and cp.endswith(".pkl"):
+            match = re.search(r"checkpoint_(\d+).pkl", cp)
+            if match:
+                step = int(match.group(1))
+                if step > latest_step:
+                    latest_step = step
+                    latest_path = os.path.join(checkpoint_dir, cp)
 
-    if not steps:
-        return None
+    # 2. Look for Orbax checkpoints
+    for f in files:
+        # Strip trailing slash if present
+        f_clean = f.rstrip('/')
+        
+        # Case A: Top-level item is a step folder (e.g. checkpoint_dir/270/)
+        if f_clean.isdigit():
+            step = int(f_clean)
+            if step > latest_step:
+                latest_step = step
+                latest_path = os.path.join(checkpoint_dir, f_clean)
+            continue
 
-    latest_step = max(steps)
-    return os.path.join(checkpoint_dir, checkpoint_map[latest_step])
+        if '.' in f_clean: continue # Skip files or folders with extensions
+        
+        # Case B: Nested in subfolders (e.g. checkpoint_dir/run_id/270/)
+        sub_dir = os.path.join(checkpoint_dir, f_clean)
+        try:
+            try:
+                import tensorflow as tf
+                sub_files = tf.io.gfile.listdir(sub_dir)
+            except:
+                sub_files = os.listdir(sub_dir)
+            
+            for sf in sub_files:
+                sf_clean = sf.rstrip('/')
+                if sf_clean.isdigit(): # Potential Orbax step folder
+                    step = int(sf_clean)
+                    if step > latest_step:
+                        latest_step = step
+                        latest_path = os.path.join(sub_dir, sf_clean)
+        except:
+            continue
+
+    if latest_path:
+        logging.info(f"Found latest checkpoint: {latest_path} (step {latest_step})")
+    
+    return latest_path
 
 class LeagueConfig(NamedTuple):
     decks: List[str] = ["deckgym-core/example_decks/mewtwoex.txt"]
@@ -523,20 +563,16 @@ class RNaDLearner:
             'config': self.config,
             'metadata': metadata or {}
         }
-        with open(path, 'wb') as f:
-            pickle.dump(data, f)
+        try:
+            import tensorflow as tf
+            with tf.io.gfile.GFile(path, 'wb') as f:
+                pickle.dump(data, f)
+        except (ImportError, Exception):
+            with open(path, 'wb') as f:
+                pickle.dump(data, f)
         logging.info(f"Checkpoint saved to {path} at step {step}")
 
     def load_checkpoint(self, path: str) -> Tuple[int, Dict[str, Any]]:
-        # Compatibility: Map optax.transforms -> optax for older checkpoints
-        if 'optax.transforms' not in sys.modules:
-            sys.modules['optax.transforms'] = optax
-        if 'optax.transforms._accumulation' not in sys.modules:
-            sys.modules['optax.transforms._accumulation'] = optax
-
-        with open(path, 'rb') as f:
-            data = pickle.load(f)
-            
         logging.info(f"Loading checkpoint from {path}...")
         
         # 1. Initialize fresh params/opt_state to get correct shapes/structure for current code
@@ -547,20 +583,81 @@ class RNaDLearner:
         current_params = self.network.init(rng, dummy_obs, mask=dummy_mask)
         current_opt_state = self.optimizer.init(current_params)
         
-        # 2. Merge loaded params into current params
-        self.params = merge_recursive(current_params, data['params'])
-        self.fixed_params = merge_recursive(current_params, data['fixed_params'])
-        
-        # 3. Merge opt_state
-        try:
-             self.opt_state = merge_recursive(current_opt_state, data['opt_state'])
-        except Exception as e:
-             logging.warning(f"Failed to merge opt_state: {e}. Resetting optimizer state.")
-             self.opt_state = current_opt_state
-             
-        step = data['step']
-        metadata = data.get('metadata', {})
-        
+        step = 0
+        metadata = {}
+
+        if path.endswith(".pkl"):
+            # Compatibility: Map optax.transforms -> optax for older checkpoints
+            if 'optax.transforms' not in sys.modules:
+                sys.modules['optax.transforms'] = optax
+            if 'optax.transforms._accumulation' not in sys.modules:
+                sys.modules['optax.transforms._accumulation'] = optax
+
+            try:
+                import tensorflow as tf
+                with tf.io.gfile.GFile(path, 'rb') as f:
+                    data = pickle.load(f)
+            except (ImportError, Exception):
+                with open(path, 'rb') as f:
+                    data = pickle.load(f)
+                
+            # Merge loaded params into current params
+            self.params = merge_recursive(current_params, data['params'])
+            self.fixed_params = merge_recursive(current_params, data['fixed_params'])
+            
+            # Merge opt_state
+            try:
+                 self.opt_state = merge_recursive(current_opt_state, data['opt_state'])
+            except Exception as e:
+                 logging.warning(f"Failed to merge opt_state: {e}. Resetting optimizer state.")
+                 self.opt_state = current_opt_state
+                 
+            step = data.get('step', 0)
+            metadata = data.get('metadata', {})
+        else:
+            # Assume Orbax checkpoint directory
+            import orbax.checkpoint
+            checkpointer = orbax.checkpoint.StandardCheckpointer()
+            
+            # Extract step from path if possible
+            match = re.search(r"/(\d+)$", path.rstrip('/'))
+            if match:
+                step = int(match.group(1))
+            
+            # Try to restore as a dict (matching our new save format)
+            target = {
+                'params': current_params,
+                'fixed_params': current_params,
+                'opt_state': current_opt_state
+            }
+            
+            try:
+                # We use args to specify what we want to restore
+                restore_args = orbax.checkpoint.args.StandardRestore(target)
+                restored = checkpointer.restore(path, args=restore_args)
+                
+                if isinstance(restored, dict) and 'params' in restored:
+                    self.params = merge_recursive(current_params, restored['params'])
+                    self.fixed_params = merge_recursive(current_params, restored.get('fixed_params', self.params))
+                    self.opt_state = merge_recursive(current_opt_state, restored.get('opt_state', current_opt_state))
+                else:
+                    # Legacy: restored is just params
+                    logging.info("Restored Orbax checkpoint seems to contain only params.")
+                    self.params = merge_recursive(current_params, restored)
+                    self.fixed_params = self.params
+                    self.opt_state = current_opt_state
+            except Exception as e:
+                logging.warning(f"Failed to restore full state from Orbax: {e}. Trying to restore params directly.")
+                try:
+                    # Try restoring just params
+                    params_only = checkpointer.restore(path, args=orbax.checkpoint.args.StandardRestore(current_params))
+                    self.params = merge_recursive(current_params, params_only)
+                    self.fixed_params = self.params
+                    self.opt_state = current_opt_state
+                except Exception as e2:
+                    logging.error(f"Completely failed to load Orbax checkpoint: {e2}")
+                    raise e2
+
         logging.info(f"Checkpoint loaded, resuming from step {step}")
         return step, metadata
 
@@ -1167,10 +1264,17 @@ def train_loop(config: RNaDConfig, experiment_manager: Optional[Any] = None, che
     start_step = 0
 
     # Ensure checkpoint directory exists
-    os.makedirs(checkpoint_dir, exist_ok=True)
+    try:
+        import tensorflow as tf
+        if not tf.io.gfile.exists(checkpoint_dir):
+            tf.io.gfile.makedirs(checkpoint_dir)
+        checkpoint_exists = tf.io.gfile.exists(resume_checkpoint) if resume_checkpoint else False
+    except (ImportError, Exception):
+        os.makedirs(checkpoint_dir, exist_ok=True)
+        checkpoint_exists = os.path.exists(resume_checkpoint) if resume_checkpoint else False
 
     if resume_checkpoint:
-        if os.path.exists(resume_checkpoint):
+        if checkpoint_exists:
             start_step, _ = learner.load_checkpoint(resume_checkpoint)
             start_step += 1 # Resume from next step
         else:
@@ -1207,9 +1311,20 @@ def train_loop(config: RNaDConfig, experiment_manager: Optional[Any] = None, che
         # Try to load checkpoint 0
         try:
             cp0 = os.path.join(checkpoint_dir, "checkpoint_0.pkl")
-            if os.path.exists(cp0):
-                with open(cp0, 'rb') as f:
-                    data = pickle.load(f)
+            try:
+                import tensorflow as tf
+                cp0_exists = tf.io.gfile.exists(cp0)
+            except (ImportError, Exception):
+                cp0_exists = os.path.exists(cp0)
+
+            if cp0_exists:
+                try:
+                    import tensorflow as tf
+                    with tf.io.gfile.GFile(cp0, 'rb') as f:
+                        data = pickle.load(f)
+                except (ImportError, Exception):
+                    with open(cp0, 'rb') as f:
+                        data = pickle.load(f)
                 baseline_params = data['params']
                 logging.info("Loaded baseline parameters from checkpoint_0.pkl")
             else:
@@ -1279,14 +1394,15 @@ def train_loop(config: RNaDConfig, experiment_manager: Optional[Any] = None, che
             experiment_manager.log_metrics(step, metrics)
 
         if experiment_manager and step % config.save_interval == 0:
-            experiment_manager.save_model(step, learner.params)
+            experiment_manager.save_model(step, learner.params, learner.fixed_params, learner.opt_state)
 
         if step % 100 == 0:
             learner.update_fixed_point()
             logging.info("Updated fixed point.")
 
         if step % save_interval == 0:
-             ckpt_path = os.path.join(checkpoint_dir, f"checkpoint_{step}.pkl")
+             current_checkpoint_dir = experiment_manager.checkpoint_dir if experiment_manager else checkpoint_dir
+             ckpt_path = os.path.join(current_checkpoint_dir, f"checkpoint_{step}.pkl")
              metadata = {}
              if experiment_manager and hasattr(experiment_manager, 'run_id'):
                  metadata['mlflow_run_id'] = experiment_manager.run_id

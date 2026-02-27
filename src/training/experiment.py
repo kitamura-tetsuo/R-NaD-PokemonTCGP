@@ -99,10 +99,16 @@ class ExperimentManager:
         flatten(metrics)
         mlflow.log_metrics(flat_metrics, step=step)
 
-    def save_model(self, step: int, params: Any):
-        """Saves model parameters using Orbax and logs as MLflow artifact."""
+    def save_model(self, step: int, params: Any, fixed_params: Any = None, opt_state: Any = None):
+        """Saves model parameters and state using Orbax and logs as MLflow artifact."""
         # Save locally
-        save_args = orbax.checkpoint.args.StandardSave(params)
+        ckpt_dict = {'params': params}
+        if fixed_params is not None:
+            ckpt_dict['fixed_params'] = fixed_params
+        if opt_state is not None:
+            ckpt_dict['opt_state'] = opt_state
+
+        save_args = orbax.checkpoint.args.StandardSave(ckpt_dict)
         self.checkpoint_manager.save(step, args=save_args)
 
         # Ensure save is complete before logging artifact

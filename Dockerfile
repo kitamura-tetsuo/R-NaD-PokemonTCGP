@@ -1,9 +1,9 @@
-# ベースイメージ (JAX + TPU対応のものを選ぶ)
+# ベースイメージ (JAX + GPU対応)
 FROM python:3.10-slim
 
 # 必要なシステムパッケージとRustをインストール
 RUN apt-get update && apt-get install -y \
-    curl build-essential git \
+    curl build-essential git libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
 # Rustのインストール
@@ -11,8 +11,8 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 ENV PATH="/root/.cargo/bin:${PATH}"
 
 # Pythonライブラリのインストール
-COPY requirements-gcp-tpu.txt .
-RUN pip install --no-cache-dir -r requirements-gcp-tpu.txt
+COPY requirements-gcp.txt .
+RUN pip install --no-cache-dir -r requirements-gcp.txt
 
 # ソースコードをコピー
 WORKDIR /app

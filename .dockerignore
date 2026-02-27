@@ -26,6 +26,7 @@ deckgym.so
 mined_data.jsonl
 *.db
 *.npy
+!card_embeddings.npy
 *.html
 league_test
 tune_checkpoints

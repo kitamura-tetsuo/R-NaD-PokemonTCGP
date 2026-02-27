@@ -32,8 +32,13 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 
 def get_run_id_from_checkpoint(path):
     try:
-        with open(path, 'rb') as f:
-            data = pickle.load(f)
+        try:
+            import tensorflow as tf
+            with tf.io.gfile.GFile(path, 'rb') as f:
+                data = pickle.load(f)
+        except (ImportError, Exception):
+            with open(path, 'rb') as f:
+                data = pickle.load(f)
         return data.get('metadata', {}).get('mlflow_run_id')
     except Exception as e:
         logging.warning(f"Failed to extract run_id from checkpoint {path}: {e}")
