@@ -1,7 +1,6 @@
 # GPU用のJAXインストール
---extra-index-url https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
-jax[cuda12_pip]
-# jaxlib (jax[cuda12_pip] で自動的にインストールされます)
+jax[cuda12]
+
 numpy
 scipy
 
@@ -15,7 +14,6 @@ open_spiel
 gymnasium
 
 # --- Checkpointing & MLOps ---
-orbax-checkpoint
 mlflow
 optuna
 google-cloud-storage

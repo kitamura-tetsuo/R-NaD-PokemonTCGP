@@ -8,8 +8,8 @@ docker build -t $IMAGE_URI .
 docker push $IMAGE_URI
 
 # 古い（タグのない）イメージを削除
-IMAGE_BASE=${IMAGE_URI%:*}
-gcloud artifacts docker images list "$IMAGE_BASE" --filter='-tags:*' --format='value(version)' | xargs -r -I {} gcloud artifacts docker images delete "$IMAGE_BASE@{}" --quiet
+# IMAGE_BASE=${IMAGE_URI%:*}
+# gcloud artifacts docker images list "$IMAGE_BASE" --filter='-tags:*' --format='value(version)' | xargs -r -I {} gcloud artifacts docker images delete "$IMAGE_BASE@{}" --quiet
 
 JOB_ID=$(gcloud ai custom-jobs create \
   --region=us-central1 \

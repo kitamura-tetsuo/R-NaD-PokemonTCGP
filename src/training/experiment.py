@@ -1,5 +1,4 @@
 import mlflow
-import orbax.checkpoint
 import os
 from typing import Any, Dict
 import logging
@@ -34,14 +33,6 @@ class ExperimentManager:
         else:
             self.checkpoint_dir = os.path.abspath(os.path.join(checkpoint_dir, self.run_id))
 
-        options = orbax.checkpoint.CheckpointManagerOptions(max_to_keep=5, create=True)
-        # Use StandardCheckpointer for PyTrees
-        self.checkpointer = orbax.checkpoint.StandardCheckpointer()
-        self.checkpoint_manager = orbax.checkpoint.CheckpointManager(
-            self.checkpoint_dir,
-            self.checkpointer,
-            options=options
-        )
         logging.info(f"Initialized ExperimentManager with checkpoint dir: {self.checkpoint_dir}, log_checkpoints: {self.log_checkpoints}")
 
     def log_params(self, config: Any):
@@ -99,30 +90,13 @@ class ExperimentManager:
         flatten(metrics)
         mlflow.log_metrics(flat_metrics, step=step)
 
-    def save_model(self, step: int, params: Any, fixed_params: Any = None, opt_state: Any = None):
-        """Saves model parameters and state using Orbax and logs as MLflow artifact."""
-        # Save locally
-        ckpt_dict = {'params': params}
-        if fixed_params is not None:
-            ckpt_dict['fixed_params'] = fixed_params
-        if opt_state is not None:
-            ckpt_dict['opt_state'] = opt_state
-
-        save_args = orbax.checkpoint.args.StandardSave(ckpt_dict)
-        self.checkpoint_manager.save(step, args=save_args)
-
-        # Ensure save is complete before logging artifact
-        self.checkpoint_manager.wait_until_finished()
-
-        # Log as artifact
-        # Path to the specific step checkpoint
-        step_checkpoint_path = os.path.join(self.checkpoint_dir, str(step))
-
-        if self.log_checkpoints and os.path.exists(step_checkpoint_path):
+    def log_checkpoint_artifact(self, step: int, ckpt_path: str):
+        """Logs the .pkl checkpoint as an MLflow artifact."""
+        if self.log_checkpoints and os.path.exists(ckpt_path):
             # Log the directory as an artifact in a 'checkpoints' folder in MLflow
-            mlflow.log_artifacts(step_checkpoint_path, artifact_path=f"checkpoints/step_{step}")
+            mlflow.log_artifact(ckpt_path, artifact_path=f"checkpoints/step_{step}")
             logging.info(f"Saved checkpoint for step {step} to MLflow.")
         elif not self.log_checkpoints:
             logging.info(f"Skipping checkpoint upload to MLflow for step {step} (disabled).")
         else:
-            logging.warning(f"Checkpoint path {step_checkpoint_path} does not exist.")
+            logging.warning(f"Checkpoint path {ckpt_path} does not exist.")

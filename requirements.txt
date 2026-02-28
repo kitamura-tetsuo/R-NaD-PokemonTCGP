@@ -21,7 +21,6 @@ open_spiel>=1.4.0
 gymnasium==0.29.1
 
 # --- Checkpointing & MLOps ---
-orbax-checkpoint==0.5.3
 mlflow==3.9.0
 optuna==3.5.0
 nvidia-cuda-nvrtc-cu11==11.8.89
