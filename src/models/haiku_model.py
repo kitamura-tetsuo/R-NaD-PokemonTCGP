@@ -221,10 +221,12 @@ class CardTransformerNet(hk.Module):
         turn_info = x[:, :39]
         board_part = x[:, 39:39+192].reshape(batch_size, 8, 24)
         hand_ids = x[:, 231:241].astype(jnp.int32)
-        deck_ids = x[:, 241:261].astype(jnp.int32)
-        opp_deck_count = x[:, 261:262]
-        discard_ids = x[:, 262:272].astype(jnp.int32)
-        opp_discard_ids = x[:, 272:282].astype(jnp.int32)
+        opp_hand_ids = x[:, 241:251].astype(jnp.int32)
+        deck_ids = x[:, 251:271].astype(jnp.int32)
+        opp_deck_count = x[:, 271:272]
+        opp_deck_ids = x[:, 272:292].astype(jnp.int32)
+        discard_ids = x[:, 292:302].astype(jnp.int32)
+        opp_discard_ids = x[:, 302:312].astype(jnp.int32)
         
         # 2. Embedding (Board)
         board_card_ids = board_part[:, :, 11].astype(jnp.int32)

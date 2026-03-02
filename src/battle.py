@@ -590,72 +590,64 @@ def main():
         predict_fn = tf_predict
     else:
         # JAX Checkpoint or Random
+        # 1. Load Checkpoint first if available to get its shape
+        ckpt_params = None
+        ckpt_config = None
+        if checkpoint_path and os.path.exists(checkpoint_path):
+            logging.info(f"Loading checkpoint for shape inspection: {checkpoint_path}")
+            try:
+                with open(checkpoint_path, 'rb') as f:
+                    data = pickle.load(f)
+                ckpt_params = data.get('params')
+                ckpt_config = data.get('config')
+                
+                # Check for action space mismatch and pad in-memory
+                # Haiku uses nested maps: { 'module_name': { 'parameter_name': value } }
+                policy_layer_key = 'card_transformer_net/lin_policy'
+                
+                if ckpt_params and policy_layer_key in ckpt_params:
+                    policy_params = ckpt_params[policy_layer_key]
+                    if 'w' in policy_params:
+                        old_w = policy_params['w']
+                        if old_w.shape[1] != num_actions:
+                            logging.warning(f"Action space mismatch: checkpoint has {old_w.shape[1]}, current is {num_actions}. Padding in-memory.")
+                            pad_width = num_actions - old_w.shape[1]
+                            if pad_width > 0:
+                                policy_params['w'] = jnp.pad(old_w, ((0, 0), (0, pad_width)), mode='constant')
+                                if 'b' in policy_params:
+                                    policy_params['b'] = jnp.pad(policy_params['b'], ((0, pad_width),), mode='constant')
+            except Exception as e:
+                logging.error(f"Failed to pre-load checkpoint: {e}")
+
+        # 2. Define model using current num_actions
         def forward(x):
-            # We need to decide model type. RNaDConfig defaults to "transformer".
-            # Checkpoints might contain config, but let's assume default or what user passed if we added args for it (we didn't).
-            # We will try to load config from checkpoint if available.
-            if config.model_type == "transformer":
+            model_config = ckpt_config if ckpt_config else config
+            if model_config.model_type == "transformer":
                 net = CardTransformerNet(
                     num_actions=num_actions,
                     embedding_matrix=embedding_matrix,
-                    hidden_size=config.transformer_embed_dim,
-                    num_blocks=config.transformer_layers,
-                    num_heads=config.transformer_heads,
+                    hidden_size=model_config.transformer_embed_dim,
+                    num_blocks=model_config.transformer_layers,
+                    num_heads=model_config.transformer_heads,
                 )
             else:
                 net = DeckGymNet(
                     num_actions=num_actions,
-                    hidden_size=config.hidden_size,
-                    num_blocks=config.num_blocks
+                    hidden_size=model_config.hidden_size,
+                    num_blocks=model_config.num_blocks
                 )
             return net(x)
 
         network = hk.transform(forward)
-
-        # Initialize Params
+        
+        # 3. Initialize or use padded params
         dummy_obs = jnp.zeros((1, *obs_shape))
-        params = network.init(rng, dummy_obs)
-
-        if checkpoint_path and os.path.exists(checkpoint_path):
-            logging.info(f"Loading checkpoint: {checkpoint_path}")
-            try:
-                with open(checkpoint_path, 'rb') as f:
-                    data = pickle.load(f)
-                
-                # Load params
-                params = data['params']
-                
-                # Update config from checkpoint if present
-                if 'config' in data:
-                    loaded_config = data['config']
-                    # Use loaded config logic:
-                    ckpt_config = data['config']
-                    logging.info(f"Checkpoint config found. Model type: {ckpt_config.model_type}")
-
-                    def forward_ckpt(x):
-                        if ckpt_config.model_type == "transformer":
-                            net = CardTransformerNet(
-                                num_actions=num_actions,
-                                embedding_matrix=embedding_matrix,
-                                hidden_size=ckpt_config.transformer_embed_dim,
-                                num_blocks=ckpt_config.transformer_layers,
-                                num_heads=ckpt_config.transformer_heads,
-                            )
-                        else:
-                            net = DeckGymNet(
-                                num_actions=num_actions,
-                                hidden_size=ckpt_config.hidden_size,
-                                num_blocks=ckpt_config.num_blocks
-                            )
-                        return net(x)
-
-                    network = hk.transform(forward_ckpt)
-
-            except Exception as e:
-                logging.error(f"Failed to load checkpoint: {e}")
-                logging.info("Using random weights instead.")
+        if ckpt_params:
+            params = ckpt_params
+            logging.info("Using padded params from checkpoint.")
         else:
-            logging.info("Using random weights (no checkpoint provided or found).")
+            params = network.init(rng, dummy_obs)
+            logging.info("Using random initialization.")
 
         jit_apply_fn = jax.jit(network.apply) if not args.disable_jit else network.apply
         jit_apply = jit_apply_fn # Keep ref

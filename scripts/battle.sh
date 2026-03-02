@@ -13,10 +13,27 @@ export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$(python -c "import nvidia.cusolver; pri
 export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$(python -c "import nvidia.cuda_cupti; print(nvidia.cuda_cupti.__path__[0])")/lib
 export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$(python -c "import nvidia.nccl; print(nvidia.nccl.__path__[0])")/lib
 export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$(python -c "import nvidia.cusparse; print(nvidia.cusparse.__path__[0])")/lib
+
+
+# 1. deckgym-core ディレクトリに移動
+cd deckgym-core
+# 2. ビルドして wheel ファイルを作成
+#    --release: 最適化を有効にする
+#    --features python: Pythonバインディングを有効にする
+#    --interpreter: プロジェクトの仮想環境のPythonを指定
+python3 -m maturin build --release --features python --interpreter ../.venv/bin/python3
+# 3. 作成された wheel を「強制再インストール」で適用
+python3 -m pip install target/wheels/deckgym-*.whl --force-reinstall
+
+cd ..
+
+# JAXが動かなくなった場合のみ実行
+python3 -m pip install numpy==1.26.4 scipy==1.12.0
+
 python src/battle.py \
     --checkpoint "checkpoints/" \
     --deck_id_1 "train_data/8acd216f.txt" \
-    --deck_id_2 "train_data/ab2bf611.txt" \
+    --deck_id_2 "train_data/cacc7f16.txt" \
     --device "cpu" \
     "$@"
 
